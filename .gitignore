@@ -1,0 +1,15 @@
+# 本地工作数据（勿提交）
+.workbuddy/
+
+# 构建产物（可用 node tools/bundle.mjs 重新生成，仅本地预览用）
+dist/
+
+# 临时截图与提问图片
+问题*.png
+预览.png
+
+# 依赖与杂项
+node_modules/
+*.log
+.DS_Store
+Thumbs.db
