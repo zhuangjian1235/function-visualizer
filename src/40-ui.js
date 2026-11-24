@@ -534,9 +534,8 @@ UI.prototype.buildTransformBar = function (bar) {
   this.addFnBtn = el('button', 'tf-add-fn', STR.addDerivedFn);
   this.addFnBtn.style.display = 'none';
   bar.appendChild(this.addFnBtn);
-  // 公式（无内容时隐藏，不占位）
+  // 公式
   this.tfFormula = el('div', 'tf-formula');
-  this.tfFormula.style.display = 'none';
   bar.appendChild(this.tfFormula);
 
   this.addFnBtn.onclick = () => this.addDerivedFunction();
@@ -1428,8 +1427,7 @@ UI.prototype.renderTransformFormula = function () {
   const rule = this.transformFormula();
   const t = this.transformedNode();
   this.tfFormula.innerHTML = '';
-  if (!rule) { this.tfFormula.style.display = 'none'; return; }
-  this.tfFormula.style.display = '';
+  if (!rule) return;
   if (t) {
     // 具体展开式（实时再展开）+ 变换规则说明
     const box = el('div', 'tf-concrete');
