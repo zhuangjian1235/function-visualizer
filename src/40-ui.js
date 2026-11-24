@@ -527,35 +527,22 @@ UI.prototype.buildTransformBar = function (bar) {
     this.tfTypeBtns[t] = b;
   }
   bar.appendChild(seg);
-  // 模式：图象动 / 坐标轴动
-  const modeSeg = el('div', 'tf-seg');
-  this.modeImg = el('button', 'active', STR.imageMode);
-  this.modeAxis = el('button', null, STR.axisMode);
-  modeSeg.appendChild(this.modeImg); modeSeg.appendChild(this.modeAxis);
-  bar.appendChild(modeSeg);
   // 参数滑块
   this.tfSliders = el('div', 'tf-group');
   bar.appendChild(this.tfSliders);
-  // 播放
-  this.playBtn = el('button', 'play-btn', '▶');
-  bar.appendChild(this.playBtn);
   // 添加新函数（把当前变换结果固化为一条新派生函数）
   this.addFnBtn = el('button', 'tf-add-fn', STR.addDerivedFn);
   this.addFnBtn.style.display = 'none';
   bar.appendChild(this.addFnBtn);
-  // 公式
+  // 公式（无内容时隐藏，不占位）
   this.tfFormula = el('div', 'tf-formula');
+  this.tfFormula.style.display = 'none';
   bar.appendChild(this.tfFormula);
 
-  this.modeImg.onclick = () => this.setMode('image');
-  this.modeAxis.onclick = () => this.setMode('axis');
-  this.playBtn.onclick = () => this.togglePlay();
   this.addFnBtn.onclick = () => this.addDerivedFunction();
 
   this.transformType = 'none';
-  this.transformMode = 'image';
   this.transformParams = { h: new Rat(0n), k: new Rat(0n), omega: new Rat(1n), A: new Rat(1n) };
-  this.playing = false;
   this.ghosts = [];
   this._lastTransformKey = '';
 };
@@ -630,11 +617,6 @@ UI.prototype.bind = function () {
     // Esc 退出全屏画布
     if (e.key === 'Escape' && this.el.canvasHost && this.el.canvasHost.classList.contains('fullscreen')) {
       this.toggleFullscreen();
-    }
-    // Space 仅在变换区有焦点时接管播放/暂停
-    if (e.key === ' ' && this.tfbar && this.tfbar.contains(document.activeElement)) {
-      e.preventDefault();
-      this.togglePlay();
     }
   });
 
@@ -901,12 +883,6 @@ UI.prototype.setTransformType = function (t) {
   this.buildTransformSliders();
   this.render();
 };
-UI.prototype.setMode = function (m) {
-  this.transformMode = m;
-  this.modeImg.classList.toggle('active', m === 'image');
-  this.modeAxis.classList.toggle('active', m === 'axis');
-  this.render();
-};
 UI.prototype.buildTransformSliders = function () {
   this.tfSliders.innerHTML = '';
   const sel = this.store.selected();
@@ -963,32 +939,26 @@ UI.prototype.buildTransformSliders = function () {
 /* 当前变换参数的唯一键（用于残影去重） */
 UI.prototype.transformKey = function () {
   const { h, k, omega, A } = this.transformParams;
-  return [this.transformType, this.transformMode, this.reflectAxis || '', h.n, h.d, k.n, k.d, omega.n, omega.d, A.n, A.d].join('|');
+  return [this.transformType, this.reflectAxis || '', h.n, h.d, k.n, k.d, omega.n, omega.d, A.n, A.d].join('|');
 };
 /* 由选中函数 + 变换参数合成变换后的节点
-   图象动：y=A·f(ωx)、y=f(x-h)+k、y=±f(±x)
-   坐标轴动：图象不动、坐标系平移/伸缩，等价为图象反向移动 → 反变换 */
+   图象动：y=A·f(ωx)、y=f(x-h)+k、y=±f(±x) */
 UI.prototype.transformedNode = function () {
   const sel = this.store.selected();
   if (!sel || this.transformType === 'none' || this.transformType === 'inverse') return null;
   if (sel.piecewise) return null;
   const { h, k, omega, A } = this.transformParams;
   const hT = h.toTeX(), kT = k.toTeX(), oT = omega.toTeX(), aT = A.toTeX();
-  const axis = this.transformMode === 'axis';
   let inner = 'x', prefix = '', suffix = '';
   if (this.transformType === 'translate') {
-    // 图象动：x→x-h；坐标轴动（图象反向）：x→x+h
-    inner = axis ? '(x+(' + hT + '))' : '(x-(' + hT + '))';
-    if (!k.isZero()) suffix = axis ? '-(' + kT + ')' : '+(' + kT + ')';
+    // 图象右移 h、上移 k → x→x-h
+    inner = '(x-(' + hT + '))';
+    if (!k.isZero()) suffix = '+(' + kT + ')';
   } else if (this.transformType === 'scale') {
-    // 图象动：A·f(ωx)；坐标轴动：1/A·f(x/ω)
-    const oInv = omega.eq(new Rat(1n)) ? '' : '((1/' + oT + ')*x)';
-    const aInv = A.eq(new Rat(1n)) ? '' : '(1/' + aT + ')*';
-    inner = axis ? (oInv || 'x') : '((' + oT + ')*x)';
-    if (axis) { if (aInv) prefix = aInv; }
-    else if (!A.eq(new Rat(1n))) prefix = '(' + aT + ')*';
+    // y=A·f(ωx)
+    inner = '((' + oT + ')*x)';
+    if (!A.eq(new Rat(1n))) prefix = '(' + aT + ')*';
   } else if (this.transformType === 'reflect') {
-    // 对称：反射自逆，图象动与坐标轴动结果相同
     if (this.reflectAxis === 'y轴' || this.reflectAxis === '原点') inner = '(-x)';
     if (this.reflectAxis === 'x轴' || this.reflectAxis === '原点') prefix = '-';
   }
@@ -1028,13 +998,6 @@ UI.prototype.transformFormula = function () {
   if (!sel || this.transformType === 'none') return null;
   const { h, k, omega, A } = this.transformParams;
   const f = sel.name ? sel.name + '(x)' : 'f(x)';
-  if (this.transformMode === 'axis') {
-    if (this.transformType === 'translate') return '坐标轴右移 ' + h.toDisplay() + '、上移 ' + k.toDisplay() + '：y=f(x' + (h.sign() >= 0 ? '+' : '') + h.toDisplay() + ')' + (k.neg().sign() >= 0 ? '+' : '') + k.neg().toDisplay();
-    if (this.transformType === 'scale') return '横轴单位 ×' + omega.toDisplay() + '、纵轴单位 ×' + A.toDisplay() + '：y=' + new Rat(1n).div(A).toDisplay() + 'f(' + new Rat(1n).div(omega).toDisplay() + 'x)';
-    if (this.transformType === 'reflect') return '坐标轴反向：' + (this.reflectAxis === 'x轴' ? 'y=-f(x)' : this.reflectAxis === 'y轴' ? 'y=f(-x)' : 'y=-f(-x)');
-    return '';
-  }
-  // 图象动
   if (this.transformType === 'translate') {
     // 图象右移 h、上移 k → y=f(x-h)+k（与 transformedNode 的 x-h 语义一致）
     const hs = h.sign(), ks = k.sign();
@@ -1050,24 +1013,6 @@ UI.prototype.transformFormula = function () {
   }
   return '';
 };
-UI.prototype.togglePlay = function () {
-  this.playing = !this.playing;
-  this.playBtn.textContent = this.playing ? '⏸' : '▶';
-  if (this.playing) this.animate();
-};
-UI.prototype.animate = function () {
-  if (!this.playing) return;
-  const sel = this.store.selected();
-  if (sel && this.transformType === 'translate') {
-    let h = this.transformParams.h.toNumber() + 0.05;
-    if (h > 5) h = -5;
-    this.transformParams.h = Rat.fromNumber(Math.round(h * 10) / 10);
-    this.buildTransformSliders();
-    this.render();
-  }
-  requestAnimationFrame(() => this.animate());
-};
-
 /* ---------- 悬停读数 ---------- */
 UI.prototype.onHover = function (e) {
   const canvas = this.el.canvas;
@@ -1483,7 +1428,8 @@ UI.prototype.renderTransformFormula = function () {
   const rule = this.transformFormula();
   const t = this.transformedNode();
   this.tfFormula.innerHTML = '';
-  if (!rule) return;
+  if (!rule) { this.tfFormula.style.display = 'none'; return; }
+  this.tfFormula.style.display = '';
   if (t) {
     // 具体展开式（实时再展开）+ 变换规则说明
     const box = el('div', 'tf-concrete');

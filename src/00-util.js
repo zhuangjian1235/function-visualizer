@@ -153,8 +153,6 @@ const STR = {
   compareTitle: '比较 f 与 g',
   transform: '变换',
   translate: '平移', scale: '伸缩', reflect: '对称', inverse: '反函数', none: '无',
-  imageMode: '图象动', axisMode: '坐标轴动',
-  play: '播放', pause: '暂停',
   undo: '撤销', redo: '重做',
   zoomIn: '放大', zoomOut: '缩小', fit: '适应', aspect: '纵横比锁',
   verified: '已验证等价', notVerified: '未通过验证',
