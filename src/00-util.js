@@ -172,9 +172,9 @@ const STR = {
   compareBadge: '比较大小',
   intersect: '联立求交点',
   calc: '微积分',
-  calcContinuity: '连续', calcDerivative: '可导', calcDifferential: '可微',
-  calcIntegrability: '可积', calcIntegral: '积分', calcImplicitDeriv: '隐函数求导', calcParamDeriv: '参数方程求导',
-  order: '阶数', orderHint: '求导阶数 / 积分重数 n（对「可导」「积分」生效，默认 1）',
+  calcContinuity: '连续', calcDerivative: '求导',
+  calcIntegrability: '定积分', calcIntegral: '积分', calcImplicitDeriv: '隐函数求导', calcParamDeriv: '参数方程求导',
+  order: '阶数', orderHint: '求导阶数 / 积分重数 n（对「求导」「积分」生效，默认 1）',
 };
 
 /* 把若干小工具挂到全局命名空间（单文件拼接后同一作用域） */

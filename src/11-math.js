@@ -1386,6 +1386,417 @@ function byPartsIntegral(node) {
   if (!coef.eq(new Rat(1n))) { n2 = math.parse(mulRatSrc(coef, '(' + n2.toString() + ')')); after = coef.toTeX() + '\\left(' + after + '\\right)'; }
   return { node: n2, tex: FRONTEND.nodeToTex(n2), steps: [{ rule: '分部积分', before: '\\int x\\,' + name + '(' + innerTex + ')\\,dx', after, justification: just }] };
 }
+/* ---------- 有理函数积分（部分分式） ---------- */
+function polyDiv(num, den) {
+  // Rat[] 长除法（低次到高次），返回 {quot, rem}；den 须非零多项式
+  let rem = trimPoly(num.slice());
+  const ddeg = polyDegree(den);
+  const qdeg = polyDegree(rem) - ddeg;
+  if (qdeg < 0) return { quot: [new Rat(0n)], rem };
+  const quot = new Array(qdeg + 1).fill(new Rat(0n));
+  while (polyDegree(rem) >= ddeg && !(rem.length === 1 && rem[0].isZero())) {
+    const rdeg = polyDegree(rem);
+    const i = rdeg - ddeg;
+    const coef = rem[rdeg].div(den[ddeg]);
+    quot[i] = coef;
+    for (let j = 0; j <= ddeg; j++) rem[i + j] = rem[i + j].sub(den[j].mul(coef));
+    rem = trimPoly(rem);
+  }
+  return { quot: trimPoly(quot), rem };
+}
+function solveLinear(A, b) {
+  // A: Rat[][] n×n，b: Rat[] n；高斯-约当消元，返回 Rat[] 或 null（奇异）
+  const n = b.length;
+  const M = [];
+  for (let i = 0; i < n; i++) M.push(A[i].concat([b[i]]));
+  for (let col = 0; col < n; col++) {
+    let piv = -1;
+    for (let r = col; r < n; r++) if (!M[r][col].isZero()) { piv = r; break; }
+    if (piv < 0) return null;
+    if (piv !== col) { const t = M[piv]; M[piv] = M[col]; M[col] = t; }
+    const pv = M[col][col];
+    for (let r = 0; r < n; r++) {
+      if (r === col) continue;
+      const f = M[r][col].div(pv);
+      if (f.isZero()) continue;
+      for (let c = col; c <= n; c++) M[r][c] = M[r][c].sub(M[col][c].mul(f));
+    }
+  }
+  const x = new Array(n);
+  for (let i = 0; i < n; i++) x[i] = M[i][n].div(M[i][i]);
+  return x;
+}
+function xPlusSrc(r) { return r.isZero() ? 'x' : 'x' + (r.sign() < 0 ? '-' : '+') + ratSrc(r.abs()); }
+function xPlusTeX(r) { return r.isZero() ? 'x' : 'x' + (r.sign() < 0 ? '-' : '+') + r.abs().toTeX(); }
+function mulRatTeX(c, expr) {
+  if (c.eq(new Rat(1n))) return expr;
+  if (c.eq(new Rat(-1n))) return '-' + expr;
+  if (c.sign() < 0) return '-' + mulRatTeX(c.neg(), expr);
+  return c.toTeX() + '\\left(' + expr + '\\right)';
+}
+function integrateQuadraticTerm(p, q, B, C) {
+  // ∫ (Bx+C)/(x²+px+q) dx，判别式 < 0；返回 {parts:[{node,tex}], steps:[...]} 或 null
+  const half = p.div(new Rat(2n));
+  const aSq = q.sub(half.mul(half)); // > 0
+  const B2 = B.div(new Rat(2n));
+  const K = C.sub(B.mul(half)); // C − B·p/2
+  const qTex = polyToTeX([q, p, new Rat(1n)]);
+  const qSrc = polyToSrc([q, p, new Rat(1n)]);
+  const parts = [], steps = [];
+  if (!B2.isZero()) {
+    const src = mulRatSrc(B2, 'log(abs(' + qSrc + '))');
+    let nd = null; try { nd = math.parse(src); } catch (e) {}
+    if (!nd) return null;
+    parts.push({ node: nd, tex: mulRatTeX(B2, '\\ln|' + qTex + '|') });
+    steps.push({ rule: '对数项', before: '\\int\\frac{' + B.toTeX() + 'x+' + C.toTeX() + '}{' + qTex + '}dx\\;(对数部分)', after: mulRatTeX(B2, '\\ln|' + qTex + '|'), justification: "\\int\\frac{u'}{u}dx=\\ln|u|" });
+  }
+  if (!K.isZero()) {
+    const sq = isPerfectSquareRat(aSq);
+    let aSrc, aTex;
+    if (sq) { aSrc = ratSrc(sq); aTex = sq.toTeX(); }
+    else { const s = surdOfRat(aSq); aSrc = mulRatSrc(s.coef, 'sqrt(' + s.radicand + ')'); aTex = (s.coef.eq(new Rat(1n)) ? '' : s.coef.toTeX()) + '\\sqrt{' + s.radicand + '}'; }
+    let argSrc, argTex;
+    if (sq && sq.eq(new Rat(1n))) { argSrc = xPlusSrc(half); argTex = xPlusTeX(half); }
+    else { argSrc = '(' + xPlusSrc(half) + ')/(' + aSrc + ')'; argTex = '\\frac{' + xPlusTeX(half) + '}{' + aTex + '}'; }
+    let coefSrc, coefTex;
+    if (sq) {
+      const c = K.div(sq);
+      coefSrc = ratSrc(c);
+      coefTex = (c.eq(new Rat(1n)) ? '' : c.eq(new Rat(-1n)) ? '-' : c.toTeX());
+    } else {
+      coefSrc = ratSrc(K) + '/(' + aSrc + ')';
+      coefTex = '\\frac{' + K.toTeX() + '}{' + aTex + '}';
+    }
+    const src = (coefSrc === '1' ? '' : '(' + coefSrc + ')*') + 'atan(' + argSrc + ')';
+    let nd = null; try { nd = math.parse(src); } catch (e) {}
+    if (!nd) return null;
+    const texTail = '\\arctan\\left(' + argTex + '\\right)';
+    parts.push({ node: nd, tex: coefTex + texTail });
+    steps.push({ rule: '反正切项', before: '\\int\\frac{' + K.toTeX() + '}{' + qTex + '}dx', after: coefTex + texTail, justification: '\\int\\frac{dx}{u^2+a^2}=\\frac{1}{a}\\arctan\\frac{u}{a}' });
+  }
+  return { parts, steps };
+}
+function integrateRational(node) {
+  // ∫ P(x)/Q(x) dx：长除法 + 部分分式（一次因式任意重数、不可约二次 m=1）
+  const num = polyCoeffsExact(node.args[0]);
+  const den = polyCoeffsExact(node.args[1]);
+  if (!num || !den) return null;
+  const numM = trimPoly(num), denM = trimPoly(den);
+  const dd = polyDegree(denM);
+  if (dd < 1) return null;
+  const steps = [];
+  // 1) 长除法（假分式）
+  let quot = [new Rat(0n)], rem = numM;
+  if (polyDegree(numM) >= dd) {
+    const d = polyDiv(numM, denM);
+    quot = d.quot; rem = d.rem;
+    steps.push({ rule: '长除法', before: '\\frac{' + polyToTeX(numM) + '}{' + polyToTeX(denM) + '}', after: polyToTeX(quot) + ' + \\frac{' + polyToTeX(rem) + '}{' + polyToTeX(denM) + '}', justification: '\\deg P\\ge\\deg Q：先化为「商 + 真分式」' });
+  }
+  // 2) 归一化分母 + 因式分解
+  const lc = denM[dd];
+  const monic = denM.map(c => c.div(lc));
+  const remS = trimPoly(rem.map(c => c.div(lc)));
+  const fac = factorPolynomial(monic);
+  const linByRoot = new Map();
+  for (const r of fac.factors) {
+    const key = r.n + '/' + r.d;
+    if (!linByRoot.has(key)) linByRoot.set(key, { r, mult: 0 });
+    linByRoot.get(key).mult++;
+  }
+  const remFac = trimPoly(fac.remainder);
+  const remDeg = polyDegree(remFac);
+  let quad = null;
+  if (remDeg === 2) {
+    const p = remFac[1], q = remFac[0];
+    const disc = p.mul(p).sub(q.mul(new Rat(4n)));
+    if (disc.sign() < 0) quad = { p, q };
+    else return null; // 有实根但非有理（无理根）→ 优雅拒绝
+  } else if (remDeg !== 0) {
+    return null; // 高次不可约 → 优雅拒绝
+  }
+  // 因式分解 TeX
+  let denFact = '';
+  for (const [, g] of linByRoot) {
+    const t = xPlusTeX(g.r.neg());
+    denFact += (denFact ? '\\cdot ' : '') + (g.mult === 1 ? '(' + t + ')' : '(' + t + ')^{' + g.mult + '}');
+  }
+  if (quad) denFact += (denFact ? '\\cdot ' : '') + '(' + polyToTeX([quad.q, quad.p, new Rat(1n)]) + ')';
+  if (!denFact) denFact = '1';
+  steps.push({ rule: '因式分解', before: '\\frac{' + polyToTeX(remS) + '}{' + polyToTeX(monic) + '}', after: '\\frac{' + polyToTeX(remS) + '}{' + denFact + '}', justification: '分母分解为一次因式（可重）与不可约二次因式' });
+  // 3) 部分分式（待定系数）
+  const termDefs = [];
+  for (const [, g] of linByRoot) for (let k = 1; k <= g.mult; k++) termDefs.push({ kind: 'lin', r: g.r, k });
+  if (quad) termDefs.push({ kind: 'quad', p: quad.p, q: quad.q });
+  const qis = [];
+  for (const t of termDefs) {
+    let Dp;
+    if (t.kind === 'lin') {
+      let dp = [new Rat(1n)];
+      const lp = [t.r.neg(), new Rat(1n)];
+      for (let j = 0; j < t.k; j++) dp = mulPoly(dp, lp);
+      Dp = dp;
+    } else Dp = [t.q, t.p, new Rat(1n)];
+    qis.push(polyDiv(monic, Dp).quot);
+  }
+  const bases = [];
+  for (let i = 0; i < termDefs.length; i++) {
+    if (termDefs[i].kind === 'lin') bases.push(qis[i]);
+    else { bases.push(mulPoly([new Rat(0n), new Rat(1n)], qis[i])); bases.push(qis[i]); }
+  }
+  const nu = bases.length;
+  const A = [], b = [];
+  for (let k = 0; k < nu; k++) {
+    const row = [];
+    for (let j = 0; j < nu; j++) row.push(bases[j][k] || new Rat(0n));
+    A.push(row); b.push(remS[k] || new Rat(0n));
+  }
+  const coeffs = solveLinear(A, b);
+  if (!coeffs) return null;
+  // 部分分式 TeX
+  let pf = '';
+  let ci = 0;
+  for (const t of termDefs) {
+    if (t.kind === 'lin') {
+      const c = coeffs[ci++];
+      if (c.isZero()) continue;
+      const linTex = xPlusTeX(t.r.neg());
+      pf += (pf ? '+' : '') + '\\frac{' + c.toTeX() + '}{' + (t.k === 1 ? linTex : '(' + linTex + ')^{' + t.k + '}') + '}';
+    } else {
+      const Bc = coeffs[ci++], Cc = coeffs[ci++];
+      if (Bc.isZero() && Cc.isZero()) continue;
+      const qTex = polyToTeX([t.q, t.p, new Rat(1n)]);
+      pf += (pf ? '+' : '') + '\\frac{' + Bc.toTeX() + 'x+' + Cc.toTeX() + '}{' + qTex + '}';
+    }
+  }
+  pf = pf.replace(/\+\-/g, '-');
+  steps.push({ rule: '部分分式', before: '\\frac{' + polyToTeX(remS) + '}{' + polyToTeX(monic) + '}', after: pf, justification: '待定系数法：通分后对比分子系数' });
+  // 4) 逐项积分
+  const parts = [];
+  if (!(quot.length === 1 && quot[0].isZero())) {
+    const qi = integratePoly(quot);
+    if (!qi) return null;
+    parts.push({ node: qi.node, tex: qi.tex });
+  }
+  ci = 0;
+  for (const t of termDefs) {
+    if (t.kind === 'lin') {
+      const c = coeffs[ci++];
+      if (c.isZero()) continue;
+      const r = t.r, k = t.k;
+      const linSrc = xPlusSrc(r.neg());
+      const linTex = xPlusTeX(r.neg());
+      if (k === 1) {
+        const src = mulRatSrc(c, 'log(abs(' + linSrc + '))');
+        let nd = null; try { nd = math.parse(src); } catch (e) {}
+        if (!nd) return null;
+        parts.push({ node: nd, tex: mulRatTeX(c, '\\ln|' + linTex + '|') });
+        steps.push({ rule: '对数项', before: '\\int\\frac{' + c.toTeX() + '}{' + linTex + '}dx', after: mulRatTeX(c, '\\ln|' + linTex + '|'), justification: '\\int\\frac{dx}{x-a}=\\ln|x-a|' });
+      } else {
+        const e2 = new Rat(1n - BigInt(k));
+        const coef = c.div(e2);
+        const src = mulRatSrc(coef, '(' + linSrc + ')^(' + ratPow(e2) + ')');
+        let nd = null; try { nd = math.parse(src); } catch (e) {}
+        if (!nd) return null;
+        parts.push({ node: nd, tex: mulRatTeX(coef, '(' + linTex + ')^{' + e2.toTeX() + '}') });
+        steps.push({ rule: '幂项', before: '\\int\\frac{' + c.toTeX() + '}{(' + linTex + ')^' + k + '}dx', after: mulRatTeX(coef, '(' + linTex + ')^{' + e2.toTeX() + '}'), justification: '\\int\\frac{dx}{(x-a)^k}=\\frac{(x-a)^{1-k}}{1-k}\\;(k>1)' });
+      }
+    } else {
+      const Bc = coeffs[ci++], Cc = coeffs[ci++];
+      if (Bc.isZero() && Cc.isZero()) continue;
+      const res = integrateQuadraticTerm(t.p, t.q, Bc, Cc);
+      if (!res) return null;
+      for (const pr of res.parts) parts.push(pr);
+      for (const s of res.steps) steps.push(s);
+    }
+  }
+  if (!parts.length) return null;
+  const nodeSum = addNodes(parts.map(p => p.node));
+  const texSum = parts.map(p => p.tex).join('+').replace(/\+\-/g, '-');
+  return { node: nodeSum, tex: texSum, steps };
+}
+
+/* ---------- 乘积三角积分（积化和差 / 降幂） ---------- */
+function matchTrigPower(a) {
+  if (a.isFunctionNode) {
+    const name = a.fn.name || a.fn;
+    if (['sin', 'cos'].includes(name)) {
+      const lin = matchLinearInner(a.args[0]);
+      if (lin) return { name, a: lin.a, b: lin.b, pow: 1 };
+    }
+    return null;
+  }
+  if (a.isOperatorNode && a.op === '^') {
+    const base = a.args[0];
+    if (base.isFunctionNode && ['sin', 'cos'].includes(base.fn.name || base.fn)) {
+      const lin = matchLinearInner(base.args[0]);
+      const e = constToRat(a.args[1].value);
+      if (lin && e && e.isInt() && e.n >= 0n && e.n <= 2n) return { name: base.fn.name, a: lin.a, b: lin.b, pow: Number(e.n) };
+    }
+  }
+  return null;
+}
+function trigTex(t) { return '\\' + t.name + '(' + polyToTeX([t.b, t.a]) + ')'; }
+function integrateLinearTrig(name, k, c, coef) {
+  // ∫ coef·name(kx+c) dx；k=0 且为 sin(0) 时返回 null（零项，省略）
+  const inner = polyToSrc([c, k]);
+  const innerTex = polyToTeX([c, k]);
+  if (k.isZero()) {
+    if (c.isZero()) {
+      if (name === 'sin') return null; // sin(0)=0 → 整项为 0
+      const src = mulRatSrc(coef, 'x');
+      let nd = null; try { nd = math.parse(src); } catch (e) {}
+      if (!nd) return null;
+      return { node: nd, tex: mulRatTeX(coef, 'x') };
+    }
+    const src = mulRatSrc(coef, name + '(' + ratSrc(c) + ')*x');
+    let nd = null; try { nd = math.parse(src); } catch (e) {}
+    if (!nd) return null;
+    return { node: nd, tex: mulRatTeX(coef, '\\' + name + '(' + c.toTeX() + ')\\,x') };
+  }
+  const ck = coef.div(k);
+  const outName = name === 'sin' ? 'cos' : 'sin';
+  const outCoef = name === 'sin' ? ck.neg() : ck;
+  const src = mulRatSrc(outCoef, outName + '(' + inner + ')');
+  let nd = null; try { nd = math.parse(src); } catch (e) {}
+  if (!nd) return null;
+  return { node: nd, tex: mulRatTeX(outCoef, '\\' + outName + '(' + innerTex + ')') };
+}
+function integrateTrigProduct(node) {
+  // sin·cos / sin·sin / cos·cos（各一次，ax+b）
+  if (!node.isOperatorNode || node.op !== '*') return null;
+  let coef = new Rat(1n);
+  const sins = [], coss = [];
+  for (const a of node.args) {
+    const apc = polyCoeffsExact(a);
+    if (apc && apc.length === 1) { coef = coef.mul(apc[0]); continue; }
+    const t = matchTrigPower(a);
+    if (!t || t.pow !== 1) return null;
+    if (t.name === 'sin') sins.push(t); else coss.push(t);
+  }
+  if ((sins.length + coss.length) !== 2) return null;
+  let A, B, mode;
+  if (sins.length === 2) { A = sins[0]; B = sins[1]; mode = 'ss'; }
+  else if (coss.length === 2) { A = coss[0]; B = coss[1]; mode = 'cc'; }
+  else { A = sins[0]; B = coss[0]; mode = 'sc'; }
+  const a1 = A.a, b1 = A.b, a2 = B.a, b2 = B.b;
+  const kPlus = a1.add(a2), kMinus = a1.sub(a2);
+  const cPlus = b1.add(b2), cMinus = b1.sub(b2);
+  const half = new Rat(1n, 2n);
+  const parts = [], steps = [];
+  const push = (name, k, c, sgn) => {
+    const r = integrateLinearTrig(name, k, c, half.mul(coef).mul(sgn));
+    if (r) parts.push(r);
+    return true;
+  };
+  const modeTex = { ss: '\\sin A\\sin B=\\tfrac12[\\cos(A-B)-\\cos(A+B)]', cc: '\\cos A\\cos B=\\tfrac12[\\cos(A+B)+\\cos(A-B)]', sc: '\\sin A\\cos B=\\tfrac12[\\sin(A+B)+\\sin(A-B)]' }[mode];
+  steps.push({ rule: '积化和差', before: '\\int ' + mulRatTeX(coef, '\\,' + trigTex(A) + '\\cdot' + trigTex(B)) + '\\,dx', after: '\\tfrac12[\\ldots]', justification: modeTex });
+  if (mode === 'ss') {
+    if (!push('cos', kMinus, cMinus, new Rat(1n))) return null;
+    if (!push('cos', kPlus, cPlus, new Rat(-1n))) return null;
+  } else if (mode === 'cc') {
+    if (!push('cos', kPlus, cPlus, new Rat(1n))) return null;
+    if (!push('cos', kMinus, cMinus, new Rat(1n))) return null;
+  } else {
+    if (!push('sin', kPlus, cPlus, new Rat(1n))) return null;
+    if (!push('sin', kMinus, cMinus, new Rat(1n))) return null;
+  }
+  if (!parts.length) return null;
+  const nodeSum = addNodes(parts.map(p => p.node));
+  const texSum = parts.map(p => p.tex).join('+').replace(/\+\-/g, '-');
+  return { node: nodeSum, tex: texSum, steps };
+}
+function integrateTrigPower(node) {
+  // sin^n / cos^n（n=2 降幂）
+  if (!node.isOperatorNode || node.op !== '^') return null;
+  const base = node.args[0];
+  if (!base.isFunctionNode || !['sin', 'cos'].includes(base.fn.name || base.fn)) return null;
+  const lin = matchLinearInner(base.args[0]);
+  const e = constToRat(node.args[1].value);
+  if (!lin || !e || !e.isInt() || e.n !== 2n) return null;
+  const name = base.fn.name;
+  const a = lin.a, b = lin.b;
+  const twoA = a.mul(new Rat(2n));
+  const half = new Rat(1n, 2n);
+  const amp = new Rat(1n).div(a.mul(new Rat(4n)));
+  const outCoef = name === 'sin' ? amp.neg() : amp;
+  const inner = polyToSrc([b.mul(new Rat(2n)), twoA]);
+  const innerTex = polyToTeX([b.mul(new Rat(2n)), twoA]);
+  const parts = [];
+  let n0 = null; try { n0 = math.parse(mulRatSrc(half, 'x')); } catch (e) {}
+  let n1 = null; try { n1 = math.parse(mulRatSrc(outCoef, 'sin(' + inner + ')')); } catch (e) {}
+  if (!n0 || !n1) return null;
+  parts.push({ node: n0, tex: '\\frac{x}{2}' });
+  parts.push({ node: n1, tex: mulRatTeX(outCoef, '\\sin(' + innerTex + ')') });
+  const steps = [{
+    rule: '降幂',
+    before: '\\int\\' + name + '^2(' + polyToTeX([b, a]) + ')\\,dx',
+    after: '\\frac{x}{2}' + (name === 'sin' ? '-' : '+') + '\\frac{\\sin(' + innerTex + ')}{' + a.mul(new Rat(4n)).toTeX() + '}',
+    justification: name === 'sin' ? '\\sin^2 u=\\frac{1-\\cos 2u}{2}' : '\\cos^2 u=\\frac{1+\\cos 2u}{2}',
+  }];
+  const nodeSum = addNodes(parts.map(p => p.node));
+  const texSum = parts.map(p => p.tex).join('+').replace(/\+\-/g, '-');
+  return { node: nodeSum, tex: texSum, steps };
+}
+
+/* ---------- 数值积分（自适应辛普森）与无初等原函数判定 ---------- */
+function numericIntegrate(f, a, b) {
+  if (!isFinite(a) || !isFinite(b) || !(a < b)) return NaN;
+  const simpson = (lo, hi, flo, fmid, fhi) => (hi - lo) * (flo + 4 * fmid + fhi) / 6;
+  const rec = (lo, hi, flo, fmid, fhi, whole, depth) => {
+    const mid = (lo + hi) / 2;
+    const flm = f((lo + mid) / 2), frm = f((mid + hi) / 2);
+    if (!isFinite(flm) || !isFinite(frm)) return NaN;
+    const left = simpson(lo, mid, flo, flm, fmid);
+    const right = simpson(mid, hi, fmid, frm, fhi);
+    if (depth <= 0 || Math.abs(left + right - whole) <= 1e-12 * Math.max(1, Math.abs(left + right))) {
+      return left + right + (left + right - whole) / 15;
+    }
+    const l = rec(lo, mid, flo, flm, fmid, left, depth - 1);
+    const r = rec(mid, hi, fmid, frm, fhi, right, depth - 1);
+    return (isFinite(l) && isFinite(r)) ? l + r : NaN;
+  };
+  const flo = f(a), fmid = f((a + b) / 2), fhi = f(b);
+  if (!isFinite(flo) || !isFinite(fmid) || !isFinite(fhi)) return NaN;
+  return rec(a, b, flo, fmid, fhi, simpson(a, b, flo, fmid, fhi), 14);
+}
+function matchNonElementary(node) {
+  // 常见「无初等原函数」模式（Liouville），返回 TeX 描述或 null
+  if (!node) return null;
+  if (node.isFunctionNode) {
+    const name = node.fn.name || node.fn;
+    if (name === 'exp') {
+      const pc = polyCoeffsExact(node.args[0]);
+      if (pc && pc.length >= 3) return 'e^{' + polyToTeX(pc) + '}（指数为二次及以上多项式）无初等原函数';
+    }
+    if (name === 'sin' || name === 'cos') {
+      const pc = polyCoeffsExact(node.args[0]);
+      if (pc && pc.length >= 3) return '\\' + name + '(' + polyToTeX(pc) + ')（内层为二次及以上多项式）无初等原函数';
+    }
+  }
+  if (node.isOperatorNode && node.op === '^' && node.args[0].isSymbolNode && node.args[0].name === 'e') {
+    // e^x 被 math.js 解析为 OperatorNode(e ^ x)，非 FunctionNode exp；补指数为二次及以上多项式的判定
+    const pc = polyCoeffsExact(node.args[1]);
+    if (pc && pc.length >= 3) return 'e^{' + polyToTeX(pc) + '}（指数为二次及以上多项式）无初等原函数';
+  }
+  if (node.isOperatorNode && node.op === '/') {
+    const n = node.args[0], d = node.args[1];
+    if (d.isSymbolNode && d.name === 'x') {
+      if (n.isFunctionNode && ['sin', 'cos', 'exp'].includes(n.fn.name || n.fn)) {
+        const nm = n.fn.name || n.fn;
+        return '\\frac{' + (nm === 'exp' ? 'e^x' : '\\' + nm + ' x') + '}{x} 无初等原函数（\\frac{\\sin x}{x},\\frac{e^x}{x} 型）';
+      }
+      // e^x / x 形态：分子是 e^x（OperatorNode ^，底为 e）
+      if (n.isOperatorNode && n.op === '^' && n.args[0].isSymbolNode && n.args[0].name === 'e' && n.args[1].isSymbolNode && n.args[1].name === 'x') {
+        return '\\frac{e^x}{x} 无初等原函数（\\frac{\\sin x}{x},\\frac{e^x}{x} 型）';
+      }
+    }
+    if (d.isFunctionNode && (d.fn.name || d.fn) === 'log') {
+      return '\\frac{1}{\\ln x} 无初等原函数';
+    }
+  }
+  return null;
+}
+
 function integrate(node) {
   if (!node) return null;
   if (node.isParenthesisNode) return integrate(node.content);
@@ -1418,6 +1829,8 @@ function integrate(node) {
       const n2 = c.eq(new Rat(-1n)) ? negNode(r.node) : math.parse(mulRatSrc(c, '(' + r.node.toString() + ')'));
       return { node: n2, tex: FRONTEND.nodeToTex(n2), steps: r.steps };
     }
+    const tp = integrateTrigProduct(node);
+    if (tp) return tp;
     return byPartsIntegral(node);
   }
   if (node.isOperatorNode && node.op === '/') {
@@ -1429,11 +1842,15 @@ function integrate(node) {
       let n2 = null; try { n2 = math.parse(src); } catch (e) {}
       if (n2) return { node: n2, tex: FRONTEND.nodeToTex(n2), steps: [{ rule: '对数法则', before: '\\int\\frac{' + numPc[0].toTeX() + '}{' + FRONTEND.nodeToTex(node.args[1]) + '}dx', after: coef.toTeX() + '\\ln|' + FRONTEND.nodeToTex(node.args[1]) + '|', justification: '\\int\\frac{dx}{ax+b}=\\frac{1}{a}\\ln|ax+b|' }] };
     }
+    const rat = integrateRational(node);
+    if (rat) return rat;
     return null;
   }
   if (node.isOperatorNode && node.op === '^') {
     const base = node.args[0], exp = constToRat(node.args[1].value);
     if (base.isSymbolNode && base.name === 'x' && exp) return powerIntegral(exp);
+    const tp2 = integrateTrigPower(node);
+    if (tp2) return tp2;
     return null;
   }
   if (node.isSymbolNode && node.name === 'x') return powerIntegral(new Rat(1n));
@@ -1664,4 +2081,6 @@ var MATH_ = {
   explicitImplicit, paramImplicit, CONIC, buildConic, updateConic,
   explicitBranches, conicBranches, paramMonotonicSegments, invertParamX, solveRadicalEquation, scanRoots,
   integrate, nthDerivative, nthIntegral, definiteIntegral, conicImplicitNode, implicitDerivative, paramDerivative, approxLimit,
+  polyDiv, solveLinear, integrateRational, integrateTrigProduct, integrateTrigPower,
+  numericIntegrate, matchNonElementary,
 };

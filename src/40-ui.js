@@ -30,7 +30,7 @@ UI.prototype.$ = function (id) { return this.el[id]; };
 
 UI.prototype.build = function () {
   const app = document.querySelector('.app');
-  // 左栏
+  // 左栏：函数管理（输入 / 模板 / 列表 / 参数）
   const left = document.querySelector('.col-left');
   left.innerHTML = '';
   this.left2d = el('div', 'left-pane');
@@ -55,15 +55,12 @@ UI.prototype.build = function () {
   const fnlist = el('div', 'fnlist');
   this.left2d.appendChild(fnlist);
 
-  const opbar = el('div', 'opbar');
-  this.left2d.appendChild(opbar);
-
   const sliders = el('div', 'sliders');
   const slidersTitle = el('div', 'sliders-title', STR.params);
   sliders.appendChild(slidersTitle);
   this.left2d.appendChild(sliders);
 
-  // 中栏：复用 HTML 中已有的 .canvas-host 与 canvas（避免重复创建导致高度被两份 flex 平分）
+  // 中栏：复用 HTML 中已有的 .canvas-host 与 canvas
   const center = document.querySelector('.col-center');
   let canvasHost = center.querySelector('.canvas-host');
   let canvas = canvasHost ? canvasHost.querySelector('canvas') : null;
@@ -74,41 +71,139 @@ UI.prototype.build = function () {
   const readout = el('div', 'hover-readout');
   canvasHost.appendChild(readout);
 
-  // 右栏
+  // 右栏：图标抽屉（默认收起，画布为主）
   const right = document.querySelector('.col-right');
   this.right2d = el('div', 'right-pane');
   this.right3d = el('div', 'right-pane');
   right.appendChild(this.right2d);
   right.appendChild(this.right3d);
   this.right3d.style.display = 'none';
-  const tabs = el('div', 'tabs');
-  const tbAnalysis = el('button', 'active', STR.analysis);
-  const tbDerivation = el('button', null, STR.derivation);
-  const tbHistory = el('button', null, STR.history);
-  tabs.appendChild(tbAnalysis); tabs.appendChild(tbDerivation); tabs.appendChild(tbHistory);
-  this.right2d.appendChild(tabs);
-  this.buildIntervalPanel(this.right2d);
-  this.buildCoordPanel(this.right2d);
-  const tabBody = el('div', 'tab-body');
-  this.right2d.appendChild(tabBody);
+  this.buildDrawer(this.right2d);
 
-  // 变换条
-  const tfbar = document.querySelector('.col-transform');
-  tfbar.innerHTML = '';
-
-  this.el = { input, addBtn, errMsg, templates, fnlist, opbar, sliders, slidersTitle, canvas, canvasHost, topbar, readout, tabs, tbAnalysis, tbDerivation, tbHistory, tabBody, tfbar, left2d: this.left2d, left3d: this.left3d, right2d: this.right2d, right3d: this.right3d };
+  this.el = { input, addBtn, errMsg, templates, fnlist, sliders, slidersTitle, canvas, canvasHost, topbar, readout, left2d: this.left2d, left3d: this.left3d, right2d: this.right2d, right3d: this.right3d };
   this.buildTemplates();
-  this.buildOps();
   this.buildTopbar();
-  this.buildTransformBar();
   this.build3dPanel();
-  this.activeTab = 'analysis';
+  this.activeDrawer = null;
   this.mobileView = 'left';
   this.derivMode = 'explain';
   this.calcGoal = null;
   this.calcFnOverride = null;
   this.calcOrder = 1;
   this.mode = '2d';
+};
+
+/* 右栏图标抽屉：图标栏 + 5 个功能小页面 */
+UI.prototype.buildDrawer = function (pane) {
+  const drawer = el('div', 'drawer');
+  const main = el('div', 'drawer-main');
+  const rail = el('div', 'drawer-rail');
+  drawer.appendChild(main);
+  drawer.appendChild(rail);
+  pane.appendChild(drawer);
+  this.pages = {};
+  this.railBtns = {};
+  const defs = [
+    ['ops', '⊕', '运算'],
+    ['calc', '∫', '微积分'],
+    ['analysis', '▤', '分析'],
+    ['transform', '⇄', '变换'],
+    ['history', '☰', '记录'],
+  ];
+  for (const [key, icon, label] of defs) {
+    const p = el('div', 'drawer-page');
+    p.dataset.page = key;
+    main.appendChild(p);
+    this.pages[key] = p;
+    const b = el('button', 'rail-btn');
+    b.title = label;
+    b.innerHTML = '<span style="line-height:1;">' + icon + '</span><span class="rl">' + label + '</span>';
+    b.onclick = () => this.toggleDrawer(key);
+    rail.appendChild(b);
+    this.railBtns[key] = b;
+  }
+  this.buildOpsPage();
+  this.buildCalcPage();
+  this.buildAnalysisPage();
+  this.buildTransformPage();
+  this.buildHistoryPage();
+};
+
+/* 运算小页面 */
+UI.prototype.buildOpsPage = function () {
+  const page = this.pages.ops;
+  page.appendChild(el('div', 'dpage-head', '运算'));
+  const grid = el('div', 'btn-grid');
+  const ops = [['add', STR.opAdd], ['sub', STR.opSub], ['mul', STR.opMul], ['div', STR.opDiv], ['comp', STR.opComp]];
+  for (const [op, label] of ops) { const b = el('button', null, label); b.onclick = () => this.doOp(op); grid.appendChild(b); }
+  const invBtn = el('button', null, STR.opInv); invBtn.onclick = () => this.doInverse(); grid.appendChild(invBtn);
+  grid.appendChild(el('div', 'g-label', '比较 / 交点'));
+  const cmpBtn = el('button', null, '比较 f vs g'); cmpBtn.onclick = () => this.doCompare(); grid.appendChild(cmpBtn);
+  const intBtn = el('button', null, STR.intersect); intBtn.onclick = () => this.doIntersect(); grid.appendChild(intBtn);
+  page.appendChild(grid);
+  this.opsResult = el('div', 'dpage-result');
+  page.appendChild(this.opsResult);
+};
+
+/* 微积分小页面 */
+UI.prototype.buildCalcPage = function () {
+  const page = this.pages.calc;
+  page.appendChild(el('div', 'dpage-head', '微积分'));
+  const grid = el('div', 'btn-grid');
+  const calcDefs = [
+    ['continuity', STR.calcContinuity], ['derivative', STR.calcDerivative],
+    ['integral', STR.calcIntegral], ['integrability', STR.calcIntegrability],
+    ['implicitDerivative', STR.calcImplicitDeriv],
+    ['paramDerivative', STR.calcParamDeriv],
+  ];
+  for (const [g, label] of calcDefs) { const b = el('button', null, label); b.onclick = () => this.doCalc(g); grid.appendChild(b); }
+  const orderWrap = el('span', 'calc-order-wrap');
+  orderWrap.appendChild(el('span', 'calc-order-label', STR.order));
+  this.calcOrderInput = el('input', 'calc-order');
+  this.calcOrderInput.type = 'text';
+  this.calcOrderInput.value = '1';
+  this.calcOrderInput.title = STR.orderHint;
+  orderWrap.appendChild(this.calcOrderInput);
+  grid.appendChild(orderWrap);
+  page.appendChild(grid);
+  this.calcResult = el('div', 'dpage-result');
+  page.appendChild(this.calcResult);
+};
+
+/* 分析小页面：函数分析 + 区间分析 + 坐标系变换 */
+UI.prototype.buildAnalysisPage = function () {
+  const page = this.pages.analysis;
+  page.appendChild(el('div', 'dpage-head', '分析'));
+  this.analysisDynamic = el('div', 'dpage-result');
+  page.appendChild(this.analysisDynamic);
+  this.buildIntervalPanel(page);
+  this.buildCoordPanel(page);
+};
+
+/* 变换小页面 */
+UI.prototype.buildTransformPage = function () {
+  const page = this.pages.transform;
+  page.appendChild(el('div', 'dpage-head', '图形变换'));
+  const bar = el('div', 'transform-bar');
+  page.appendChild(bar);
+  this.buildTransformBar(bar);
+};
+
+/* 记录小页面 */
+UI.prototype.buildHistoryPage = function () {
+  const page = this.pages.history;
+  page.appendChild(el('div', 'dpage-head', '记录'));
+  this.historyResult = el('div', 'dpage-result');
+  page.appendChild(this.historyResult);
+};
+
+UI.prototype.toggleDrawer = function (key) {
+  this.activeDrawer = (this.activeDrawer === key) ? null : key;
+  this.render();
+};
+UI.prototype.openDrawer = function (key) {
+  if (this.activeDrawer !== key) this.activeDrawer = key;
+  this.render();
 };
 
 UI.prototype.buildTemplates = function () {
@@ -152,46 +247,6 @@ UI.prototype.addConic = function (type) {
   this.store.emit('add');
   this.render();
 };
-UI.prototype.buildOps = function () {
-  const ops = [['add', STR.opAdd], ['sub', STR.opSub], ['mul', STR.opMul], ['div', STR.opDiv], ['comp', STR.opComp]];
-  for (const [op, label] of ops) {
-    const b = el('button', null, label);
-    b.onclick = () => this.doOp(op);
-    this.el.opbar.appendChild(b);
-  }
-  const invBtn = el('button', null, STR.opInv);
-  invBtn.onclick = () => this.doInverse();
-  this.el.opbar.appendChild(invBtn);
-  const cmpBtn = el('button', null, '比较 f vs g');
-  cmpBtn.onclick = () => this.doCompare();
-  this.el.opbar.appendChild(cmpBtn);
-  const intBtn = el('button', null, STR.intersect);
-  intBtn.onclick = () => this.doIntersect();
-  this.el.opbar.appendChild(intBtn);
-
-  // 微积分分组
-  const calcSep = el('div', 'op-sep', STR.calc);
-  this.el.opbar.appendChild(calcSep);
-  const calcDefs = [
-    ['continuity', STR.calcContinuity], ['derivative', STR.calcDerivative], ['differential', STR.calcDifferential],
-    ['integrability', STR.calcIntegrability], ['integral', STR.calcIntegral], ['implicitDerivative', STR.calcImplicitDeriv],
-    ['paramDerivative', STR.calcParamDeriv],
-  ];
-  for (const [g, label] of calcDefs) {
-    const b = el('button', 'calc-btn', label);
-    b.onclick = () => this.doCalc(g);
-    this.el.opbar.appendChild(b);
-  }
-  const orderWrap = el('span', 'calc-order-wrap');
-  orderWrap.appendChild(el('span', 'calc-order-label', STR.order));
-  this.calcOrderInput = el('input', 'calc-order');
-  this.calcOrderInput.type = 'text';
-  this.calcOrderInput.value = '1';
-  this.calcOrderInput.title = STR.orderHint;
-  orderWrap.appendChild(this.calcOrderInput);
-  this.el.opbar.appendChild(orderWrap);
-};
-
 /* 微积分运算入口 */
 UI.prototype.doCalc = function (goal) {
   const sel = this.store.selected();
@@ -200,6 +255,11 @@ UI.prototype.doCalc = function (goal) {
     if (!sel.parametric) { alert('参数方程求导仅适用于参数曲线（由二维函数旋转生成）'); return; }
   } else if (goal === 'implicitDerivative') {
     if (!(sel.implicit && sel.conicType)) { alert('隐函数求导仅适用于圆锥曲线（圆/椭圆/双曲线/抛物线）'); return; }
+  } else if (goal === 'integral' && sel.parametric) {
+    // 参数方程积分：不定积分无初等原函数（Liouville），走 paramIntegral 推导
+    this.calcFnOverride = null;
+    this.finishCalc('paramIntegral');
+    return;
   } else if (sel.parametric) {
     alert(STR.noFnAnalysis); return; // 参数方程的四则/其它微积分暂不支持
   } else if (sel.implicit && sel.conicType) {
@@ -224,7 +284,7 @@ UI.prototype.finishCalc = function (goal) {
   this.calcGoal = goal;
   const n = parseInt(this.calcOrderInput && this.calcOrderInput.value, 10);
   this.calcOrder = (goal === 'derivative' || goal === 'integral') && isFinite(n) && n >= 1 ? n : 1;
-  this.setTab('derivation');
+  this.openDrawer('calc');
 };
 UI.prototype.conicBranchFn = function (sel, branch) {
   const node = branch.node;
@@ -454,12 +514,8 @@ UI.prototype.toggleFullscreen = function () {
   if (this.mode === '3d') { if (this.renderer3d) { this.renderer3d.resize(); this.renderer3d.render(); } }
   else { this.plot.resize(); this.plot.render(); }
 };
-UI.prototype.buildTransformBar = function () {
-  const bar = this.el.tfbar;
-  bar.classList.add('transform-bar');
-  // 折叠按钮
-  const collapse = el('button', 'collapse-btn', '▾');
-  bar.appendChild(collapse);
+UI.prototype.buildTransformBar = function (bar) {
+  this.tfbar = bar;
   // 类型选择
   const seg = el('div', 'tf-seg');
   const types = [['translate', '平移'], ['scale', '伸缩'], ['reflect', '对称'], ['inverse', '反函数'], ['none', '无']];
@@ -493,7 +549,6 @@ UI.prototype.buildTransformBar = function () {
 
   this.modeImg.onclick = () => this.setMode('image');
   this.modeAxis.onclick = () => this.setMode('axis');
-  collapse.onclick = () => this.toggleTransformCollapsed(collapse, bar);
   this.playBtn.onclick = () => this.togglePlay();
   this.addFnBtn.onclick = () => this.addDerivedFunction();
 
@@ -504,18 +559,6 @@ UI.prototype.buildTransformBar = function () {
   this.ghosts = [];
   this._lastTransformKey = '';
 };
-UI.prototype.toggleTransformCollapsed = function (btn, bar) {
-  const collapsed = bar.classList.toggle('collapsed');
-  if (collapsed) {
-    btn.textContent = '▴';
-    // 隐藏除折叠按钮外的所有子元素
-    for (const child of [...bar.children]) if (child !== btn) child.style.display = 'none';
-  } else {
-    btn.textContent = '▾';
-    for (const child of [...bar.children]) child.style.display = '';
-  }
-};
-
 UI.prototype.bind = function () {
   const s = this.store, p = this.plot;
   const canvas = this.el.canvas;
@@ -589,7 +632,7 @@ UI.prototype.bind = function () {
       this.toggleFullscreen();
     }
     // Space 仅在变换区有焦点时接管播放/暂停
-    if (e.key === ' ' && this.el.tfbar.contains(document.activeElement)) {
+    if (e.key === ' ' && this.tfbar && this.tfbar.contains(document.activeElement)) {
       e.preventDefault();
       this.togglePlay();
     }
@@ -597,12 +640,7 @@ UI.prototype.bind = function () {
 
   s.on(ev => this.render());
 
-  // 页签
-  this.el.tbAnalysis.onclick = () => this.setTab('analysis');
-  this.el.tbDerivation.onclick = () => this.setTab('derivation');
-  this.el.tbHistory.onclick = () => this.setTab('history');
-
-  // 窄窗口页签（按模式动态：2D→函数/分析/变换，3D→三维图形/隐式方程）
+  // 窄窗口页签（按模式动态：2D→函数/工具，3D→三维图形/隐式方程）
   this.refreshMobileTabs();
   this.setMobileView('left');
 };
@@ -618,7 +656,7 @@ UI.prototype.refreshMobileTabs = function () {
   const is3d = this.mode === '3d';
   const defs = is3d
     ? [['left', '三维图形'], ['right', '隐式方程']]
-    : [['left', '函数'], ['right', '分析'], ['transform', '变换']];
+    : [['left', '函数'], ['right', '工具']];
   for (const [view, label] of defs) {
     const b = el('button', null, label);
     b.dataset.view = view;
@@ -630,8 +668,11 @@ UI.prototype.refreshMobileTabs = function () {
 
 UI.prototype.setMobileView = function (view) {
   this.mobileView = view;
-  const map = { left: '.col-left', right: '.col-right', transform: '.col-transform' };
+  const map = { left: '.col-left', right: '.col-right' };
   for (const k in map) document.querySelector(map[k]).classList.toggle('mob-show', k === view);
+  // 「工具」视图强制展开抽屉，便于切换小页面
+  if (view === 'right' && !this.activeDrawer) this.activeDrawer = 'calc';
+  this.render();
   for (const b of this.el.mobTabs.querySelectorAll('button')) b.classList.toggle('active', b.dataset.view === view);
 };
 
@@ -777,7 +818,7 @@ UI.prototype.doCompare = function () {
     this.pickBranch(g, gIdx => {
       this.store.clearIntersection();
       this.store.setCompare(sel.id, g.id, fIdx, gIdx);
-      this.setTab('derivation');
+      this.openDrawer('ops');
       this.render();
     });
   };
@@ -793,7 +834,7 @@ UI.prototype.doIntersect = function () {
     this.pickBranch(g, gIdx => {
       this.store.clearCompare();
       this.store.setIntersection(sel.id, g.id, fIdx, gIdx);
-      this.setTab('derivation');
+      this.openDrawer('ops');
       this.render();
     });
   };
@@ -829,14 +870,6 @@ UI.prototype.showBranchPicker = function (fn, branches, cb) {
   overlay.appendChild(box);
   overlay.onclick = e => { if (e.target === overlay) document.body.removeChild(overlay); };
   document.body.appendChild(overlay);
-};
-
-UI.prototype.setTab = function (tab) {
-  this.activeTab = tab;
-  this.el.tbAnalysis.classList.toggle('active', tab === 'analysis');
-  this.el.tbDerivation.classList.toggle('active', tab === 'derivation');
-  this.el.tbHistory.classList.toggle('active', tab === 'history');
-  this.render();
 };
 
 UI.prototype.autoFit = function () {
@@ -1074,7 +1107,7 @@ UI.prototype.render = function () {
   }
   this.renderFunctionList();
   this.renderSliders();
-  this.renderTabBody();
+  this.renderDrawerPage();
   this.renderTransformFormula();
   this.applyTransformToPlot();
   this.refreshInterval();
@@ -1192,19 +1225,39 @@ UI.prototype.renderSliders = function () {
     cont.appendChild(row);
   }
 };
-UI.prototype.renderTabBody = function () {
-  const body = this.el.tabBody;
-  body.innerHTML = '';
-  if (this.activeTab === 'history') { this.renderHistory(body); return; }
+UI.prototype.renderDrawerPage = function () {
+  const key = this.activeDrawer;
+  for (const k in this.pages) this.pages[k].classList.toggle('active', k === key);
+  for (const k in this.railBtns) this.railBtns[k].classList.toggle('active', k === key);
+  document.querySelector('.app').classList.toggle('drawer-open', !!key);
   const sel = this.store.selected();
-  if (!sel) { body.appendChild(el('div', 'empty-hint', STR.noSelection)); return; }
-  this.renderCurveForm(body, sel);
-  if (sel.implicit || sel.parametric) {
-    body.appendChild(el('div', 'empty-hint', STR.noFnAnalysis));
-    return;
+  if (key === 'ops') {
+    this.opsResult.innerHTML = '';
+    if (this.store.compareTarget || this.store.intersectionTarget) {
+      if (sel) this.renderDerivation(this.opsResult, sel);
+    } else {
+      this.opsResult.appendChild(el('div', 'empty-hint', '选择上方运算：四则 / 复合 / 反函数生成新函数；「比较」「联立求交点」在画布上查看结果。'));
+    }
+  } else if (key === 'calc') {
+    this.calcResult.innerHTML = '';
+    if (this.calcGoal) {
+      if (sel) this.renderDerivation(this.calcResult, sel);
+    } else {
+      this.calcResult.appendChild(el('div', 'empty-hint', '选择上方微积分运算，查看可导 / 可积判定与完整推导。'));
+    }
+  } else if (key === 'analysis') {
+    this.analysisDynamic.innerHTML = '';
+    if (!sel) { this.analysisDynamic.appendChild(el('div', 'empty-hint', STR.noSelection)); return; }
+    this.renderCurveForm(this.analysisDynamic, sel);
+    if (sel.implicit || sel.parametric) {
+      this.analysisDynamic.appendChild(el('div', 'empty-hint', STR.noFnAnalysis));
+      return;
+    }
+    this.renderAnalysis(this.analysisDynamic, sel);
+  } else if (key === 'history') {
+    this.historyResult.innerHTML = '';
+    this.renderHistory(this.historyResult);
   }
-  if (this.activeTab === 'analysis') this.renderAnalysis(body, sel);
-  else this.renderDerivation(body, sel);
 };
 /* 表达形式：隐式方程 F(x,y)=0 与参数方程 {x(t),y(t)} */
 UI.prototype.parametricTex = function (fn) {
@@ -1792,7 +1845,7 @@ UI.prototype.switchMode = function (mode) {
   this.left3d.style.display = is3d ? '' : 'none';
   this.right2d.style.display = is3d ? 'none' : '';
   this.right3d.style.display = is3d ? '' : 'none';
-  if (this.el.tfbar) this.el.tfbar.style.display = is3d ? 'none' : '';
+  if (this.tfbar) this.tfbar.style.display = is3d ? 'none' : '';
   if (this.btn2d) this.btn2d.classList.toggle('active', !is3d);
   if (this.btn3d) this.btn3d.classList.toggle('active', is3d);
   if (this.renderer3d) this.renderer3d.active = is3d;

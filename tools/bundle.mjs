@@ -1,6 +1,6 @@
 /* ============================================================
  * tools/bundle.mjs — 打包器（零依赖，仅开发机运行）
- * 产出 dist/函数可视化6.html：单文件自包含，file:// 双击可用
+ * 产出 dist/函数可视化8.html：单文件自包含，file:// 双击可用
  *  - 按拓扑序拼接 src/*.js（剥离 import/export）
  *  - 内联 math.js / KaTeX JS（IIFE 包裹）
  *  - 内联 CSS，@font-face 的 woff2 替换为 base64 data URI
@@ -82,7 +82,7 @@ const html = `<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>函数可视化6</title>
+<title>函数可视化8</title>
 <!--
   第三方许可：
   1. math.js 15.2.0 (Apache-2.0)
@@ -126,7 +126,7 @@ ${srcBody}
 /* 6. 写出 */
 const distDir = path.join(ROOT, 'dist');
 fs.mkdirSync(distDir, { recursive: true });
-const outFile = path.join(distDir, '函数可视化6.html');
+const outFile = path.join(distDir, '函数可视化8.html');
 fs.writeFileSync(outFile, html, 'utf8');
 
 // 第三方许可 txt
@@ -134,5 +134,5 @@ const licTxt = `第三方软件许可声明\n==================\n\n1. math.js 15
 fs.writeFileSync(path.join(distDir, '第三方许可.txt'), licTxt, 'utf8');
 
 const size = fs.statSync(outFile).size;
-console.log('✓ 已生成 dist/函数可视化6.html（' + (size / 1024 / 1024).toFixed(2) + ' MB）');
+console.log('✓ 已生成 dist/函数可视化8.html（' + (size / 1024 / 1024).toFixed(2) + ' MB）');
 console.log('✓ 已生成 dist/第三方许可.txt');

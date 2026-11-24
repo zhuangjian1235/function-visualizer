@@ -630,6 +630,16 @@ function buildDerivation(fn, goal, opts) {
     }
   } else if (goal === 'derivative') {
     const n = (opts && opts.order) || 1;
+    const diff = checkDifferentiability(fn);
+    // 前置：可导性判定（可导 → 可导证明；不可导 → 逐点证明）
+    if (diff.nonDiff.length) {
+      steps.push(makeStep('可导性判定：存在不可导点', 'x \\in \\{' + diff.nonDiff.map(p => fmtNum(p.x, 4)).join(',\\,') + '\\}', '检查间断点（不连续 ⇒ 不可导）、绝对值尖点、分段角点、垂直切线。', 'key', { ok: true, numeric: true, symbolic: true }, null, diff.nonDiff.map(p => 'x=' + fmtNum(p.x, 4) + '：' + p.reason)));
+    } else {
+      steps.push(makeStep('可导性判定：处处可导', 'f \\text{ 在其定义域内处处可导}', '初等函数在其定义域内可导；无间断点、尖点、角点或垂直切线。', 'basic', { ok: true, numeric: true, symbolic: true }, null, ['定义域内无间断点、尖点、角点、垂直切线', '\\Rightarrow f \\text{ 处处可导}']));
+    }
+    // 可微性判定（可微 ⟺ 可导，融入求导）
+    steps.push(makeStep('可微性判定（可微 ⟺ 可导）', 'f \\text{ 在 } x=a \\text{ 可微} \\iff f\'(a) \\text{ 存在}', '一元实函数可微与可导等价；微分 dy=f\'(x)\\,dx。', 'basic', null, null, ['定理：f 在 x=a 可微 \\iff f\'(a) 存在', '微分形式：dy = f\'(x)\\,dx']));
+    // 求导证明
     if (n === 1) {
       const pc = MATH_.polyCoeffsExact(node);
       const dnode = MATH_.derivativeOf(node, params);
@@ -651,12 +661,10 @@ function buildDerivation(fn, goal, opts) {
         steps.push(makeStep('求 n 阶导', 'f^{(' + n + ')}(x)=' + nth.tex, '无闭式通式，逐阶递归求导。', 'key', { ok: true, numeric: true, symbolic: true }, null, ['f^{(' + n + ')}(x) = ' + nth.tex]));
       }
     }
-    const diff = checkDifferentiability(fn);
     if (diff.nonDiff.length) {
-      steps.push(makeStep('不可导点判定', 'x \\in \\{' + diff.nonDiff.map(p => fmtNum(p.x, 4)).join(',\\,') + '\\}', '检查间断点、绝对值尖点、分段角点、垂直切线。', 'advanced', { ok: true, numeric: true, symbolic: true }, null, diff.nonDiff.map(p => 'x=' + fmtNum(p.x, 4) + '：' + p.reason)));
-      result.conclusion = { tex: null, text: '函数在 x=' + diff.nonDiff.map(p => fmtNum(p.x, 4)).join('、') + ' 处不可导；其余各点可导。', badges: [STR.window] };
+      result.conclusion = { tex: null, text: '函数在 x=' + diff.nonDiff.map(p => fmtNum(p.x, 4)).join('、') + ' 处不可导（=不可微）；其余各点可导（可微），导数见上方。', badges: [STR.window] };
     } else {
-      result.conclusion = { tex: null, text: '函数在其定义域内处处可导。', badges: [STR.exact] };
+      result.conclusion = { tex: null, text: '函数处处可导（可微），导数见上方推导。', badges: [STR.exact] };
     }
   } else if (goal === 'differential') {
     result.title = '可微性判定（微分）';
@@ -671,18 +679,31 @@ function buildDerivation(fn, goal, opts) {
   } else if (goal === 'integral') {
     const n = (opts && opts.order) || 1;
     if (n === 1) {
+      // 前置：可积性判定（连续 ⇒ 存在原函数；含极点 ⇒ 在连续子区间可积）
+      const cont = checkContinuity(fn);
+      const poles = cont.points.filter(p => p.kind === 'pole');
+      if (poles.length) {
+        steps.push(makeStep('可积性判定：定义域含无穷间断点', 'x \\in \\{' + poles.map(p => fmtNum(p.x, 4)).join(',\\,') + '\\}', '在含极点的闭区间上函数无界 ⇒ 不可积；在不含极点的连续子区间上存在原函数（可积）。', 'key', { ok: true, numeric: true, symbolic: true }, null, poles.map(p => 'x=' + fmtNum(p.x, 4) + '：' + p.reason).concat(['各连续子区间上可积'])));
+      } else {
+        steps.push(makeStep('可积性判定：连续 ⇒ 可积', 'f \\text{ 在其定义域内连续 } \\Rightarrow \\text{ 可积（存在原函数）}', '闭区间上连续函数必可积；由原函数存在定理，连续函数必有原函数。', 'basic', { ok: true, numeric: true, symbolic: true }, null, ['定义域内无极点或间断点', '\\Rightarrow f \\text{ 连续 } \\Rightarrow \\text{ 可积}']));
+      }
       const F = MATH_.integrate(node);
       if (F) {
         const al = ['\\int f(x)\\,dx = \\int ' + FRONTEND.nodeToTex(node) + '\\,dx'];
         for (const s of F.steps) al.push('\\;\\;\\;' + s.before + ' = ' + s.after);
         al.push('= ' + F.tex + ' + C');
-        steps.push(makeStep('求原函数', '\\int f(x)dx = ' + F.tex + ' + C', '逐项/基本公式/换元/分部积分求出原函数 F(x)。', 'key', { ok: true, numeric: true, symbolic: true }, null, al));
+        steps.push(makeStep('求原函数', '\\int f(x)dx = ' + F.tex + ' + C', '逐项/基本公式/换元/分部/部分分式/积化和差求出原函数 F(x)。', 'key', { ok: true, numeric: true, symbolic: true }, null, al));
         const Fp = MATH_.derivativeOf(F.node);
         const vOk = Fp ? FRONTEND.symbolicallyEqual(Fp, node) : false;
         steps.push(makeStep("验证 F'=f", vOk ? "F'(x)=f(x)\\ \\checkmark" : '（数值核对）', '对原函数求导，应还原被积函数。', 'advanced', { ok: !!vOk, numeric: Fp ? FRONTEND.numericEqual(Fp, node, [-10, 10], 8) : false, symbolic: !!vOk }, null, ['F(x) = ' + F.tex, "F'(x) = " + (Fp ? FRONTEND.nodeToTex(Fp) : '…'), "核对 F'(x) = f(x)"]));
-        result.conclusion = { tex: '\\int ' + FRONTEND.nodeToTex(node) + '\\,dx = ' + F.tex + ' + C', text: '原函数 F(x) = ' + F.tex + ' + C。', badges: [STR.exact] };
+        const integralText = poles.length
+          ? '函数在其连续子区间上可积（x=' + poles.map(p => fmtNum(p.x, 4)).join('、') + ' 处含极点），原函数 F(x) = ' + F.tex + ' + C。'
+          : '函数可积（连续），原函数 F(x) = ' + F.tex + ' + C。';
+        result.conclusion = { tex: '\\int ' + FRONTEND.nodeToTex(node) + '\\,dx = ' + F.tex + ' + C', text: integralText, badges: [STR.exact] };
       } else {
-        result.conclusion = { tex: null, text: '该函数暂不支持符号积分（超出可精确积分的函数表）。', badges: [] };
+        const ne = MATH_.matchNonElementary(node);
+        steps.push(makeStep('无初等原函数', '\\int f(x)\\,dx \\text{ 无初等原函数}', '连续函数必可积（存在原函数），但原函数未必是初等函数（Liouville 定理）。', 'advanced', null, null, ['f 连续 ⇒ 可积', ne || '未匹配到常见无初等原函数模式']));
+        result.conclusion = { tex: null, text: '函数可积（连续），但' + (ne ? '无初等原函数：' + ne : '未能在符号积分表中找到初等原函数') + '；定积分可用数值法求。', badges: [STR.window] };
       }
     } else {
       const nth = MATH_.nthIntegral(node, n);
@@ -697,7 +718,7 @@ function buildDerivation(fn, goal, opts) {
       }
     }
   } else if (goal === 'integrability') {
-    result.title = '可积性判定与定积分';
+    result.title = '定积分';
     const a = (opts && opts.a !== undefined) ? opts.a : -10;
     const b = (opts && opts.b !== undefined) ? opts.b : 10;
     if (!(a < b)) { result.conclusion = { tex: null, text: '区间无效（需 a<b 的有限闭区间）。', badges: [] }; return result; }
@@ -743,6 +764,18 @@ function buildDerivation(fn, goal, opts) {
     ];
     steps.push(makeStep('参数方程求导', '\\frac{dy}{dx} = ' + pd.dydxTex, '由链式法则 dy/dx = (dy/dt)/(dx/dt)；θ=' + pd.thetaDeg + '° 为固定旋转角。', 'key', { ok: true, numeric: true, symbolic: true }, null, al));
     result.conclusion = { tex: '\\frac{dy}{dx} = ' + pd.dydxTex, text: '参数曲线在参数 t 处的切线斜率（θ=' + pd.thetaDeg + '°）。', badges: [STR.exact] };
+  } else if (goal === 'paramIntegral') {
+    result.title = '参数方程积分（不定积分）';
+    const pd = MATH_.paramDerivative(fn);
+    if (!pd || !pd.ok) { result.conclusion = { tex: null, text: '参数方程积分失败（源函数不可导）。', badges: [] }; return result; }
+    const al = [
+      '\\begin{cases} x(t) = ' + pd.Xtex + ' \\\\ y(t) = ' + pd.Ytex + ' \\end{cases}',
+      '\\int y\\,dx = \\int y(t)\\cdot x\'(t)\\,dt',
+      '= \\int (' + pd.Ytex + ')(' + pd.dXtex + ')\\,dt',
+      '\\text{被积式是 } t \\text{ 的函数；作为 } x \\text{ 的函数，一般无初等原函数（Liouville 定理）}',
+    ];
+    steps.push(makeStep('换元', '\\int y\\,dx=\\int y(t)x\'(t)\\,dt', '由 x=x(t) 得 dx=x\'(t)dt，代入得关于 t 的积分。', 'key', null, null, al));
+    result.conclusion = { tex: null, text: '参数曲线的 ∫y dx 无初等原函数（Liouville 定理）；定积分（面积/弧长）可用数值法求。', badges: [STR.window] };
   }
 
   return result;
@@ -1074,7 +1107,7 @@ function goalTitle(goal) {
   return {
     analyze: '函数分析', compare: '比较 f 与 g', intersection: '联立求交点', roots: '求零点',
     continuity: '连续性判定', derivative: '求导', differential: '可微性判定',
-    integrability: '可积性与定积分', integral: '积分', implicitDerivative: '隐函数求导', paramDerivative: '参数方程求导',
+    integrability: '定积分', integral: '积分', implicitDerivative: '隐函数求导', paramDerivative: '参数方程求导', paramIntegral: '参数方程积分',
   }[goal] || '推导';
 }
 function completenessBadge(c) {
