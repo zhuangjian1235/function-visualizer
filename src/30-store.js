@@ -24,7 +24,7 @@ Store.prototype.emit = function (ev) { this.listeners.forEach(cb => cb(ev)); };
 Store.prototype.snapshot = function () {
   return {
     functions: this.functions.map(f => {
-      if (f.implicit) {
+      if (f.implicit && f.conicType) {
         return {
           id: f.id, src: f.src, name: f.name, color: f.color,
           visible: f.visible, isDerived: f.isDerived, derivedFrom: f.derivedFrom, derivedLabel: f.derivedLabel,
@@ -71,7 +71,7 @@ Store.prototype.snapshot = function () {
 };
 Store.prototype.restore = function (snap) {
   this.functions = snap.functions.map(s => {
-    if (s.implicit) {
+    if (s.implicit && s.conicType) {
       const params = {};
       for (const k in (s.conicParams || {})) params[k] = new Rat(BigInt(s.conicParams[k][0]), BigInt(s.conicParams[k][1]));
       const fn = MATH_.buildConic(s.conicType, params);

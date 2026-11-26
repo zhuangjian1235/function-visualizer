@@ -43,8 +43,8 @@ describe('架构硬约束', () => {
     }
     ok(true);
   });
-  it('交付物 dist/函数可视化8.html 无 import/export 残留', () => {
-    const html = read('dist/函数可视化8.html');
+  it('交付物 dist/函数可视化9.html 无 import/export 残留', () => {
+    const html = read('dist/函数可视化9.html');
     ok(!/^\s*(import|export)\s+/m.test(html), '单文件内不应有 import/export');
   });
 });

@@ -387,8 +387,8 @@ Plot.prototype.drawImplicitCurve = function (fn, color, alpha) {
       const pts = [];
       if (e00 !== e10) pts.push([i + edgeT(f00, f10), j]);                 // 底边
       if (e10 !== e11) pts.push([i + 1, j + edgeT(f10, f11)]);             // 右边
-      if (e11 !== e01) pts.push([i + edgeT(f11, f01), j + 1]);             // 顶边
-      if (e01 !== e00) pts.push([i, j + edgeT(f01, f00)]);                 // 左边
+      if (e11 !== e01) pts.push([i + edgeT(f01, f11), j + 1]);             // 顶边（自左向右量）
+      if (e01 !== e00) pts.push([i, j + edgeT(f00, f01)]);                 // 左边（自上向下量）
       if (pts.length === 2) {
         const px1 = vp.xToPx(x0 + pts[0][0] * dx), py1 = vp.yToPx(y1 - pts[0][1] * dy);
         const px2 = vp.xToPx(x0 + pts[1][0] * dx), py2 = vp.yToPx(y1 - pts[1][1] * dy);

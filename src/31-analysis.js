@@ -550,6 +550,45 @@ function checkStep(beforeNode, afterNode, domain) {
   return { ok: numOk && symOk, numeric: numOk, symbolic: symOk };
 }
 
+/* 一般隐式曲线的数值分支：一次推导要用的地方不止一处（分支列表 + 复核），
+ * 而竖扫求根是 O(nx·ny) 的活儿，参数或区间没变就直接复用上一次结果。 */
+function implicitBranchesFor(fn, a, b) {
+  const key = fn.paramOrder.map(p => fn.params[p].toString()).join(',') + '|' + a + '|' + b;
+  if (fn._impBrKey === key && fn._impBr) return fn._impBr;
+  const r = MATH_.implicitBranchesAuto(fn.implicitFn, [a, b], {});
+  fn._impBrKey = key; fn._impBr = r;
+  return r;
+}
+/* 在另一组（更密的）分支里找同一支：先要求 x 区间真的重叠，再比中点处的 y，
+ * 否则上下两支（如圆的上半/下半）x 范围相同会被认错。 */
+function bestOverlap(bs, br) {
+  let best = null, bestD = Infinity;
+  for (const x of bs) {
+    const lo = Math.max(x.x0, br.x0), hi = Math.min(x.x1, br.x1);
+    if (!(hi > lo)) continue;
+    const mid = (lo + hi) / 2;
+    const d = Math.abs(branchYAt(x, mid) - branchYAt(br, mid));
+    if (d < bestD) { bestD = d; best = x; }
+  }
+  return best;
+}
+/* 分支在 x 处的 y（采样点线性插值） */
+function branchYAt(b, x) {
+  const p = b.pts;
+  if (x <= p[0].x) return p[0].y;
+  if (x >= p[p.length - 1].x) return p[p.length - 1].y;
+  let i = 1;
+  while (i < p.length && p[i].x < x) i++;
+  const a = p[i - 1], c = p[Math.min(i, p.length - 1)];
+  const t = c.x === a.x ? 0 : (x - a.x) / (c.x - a.x);
+  return a.y + (c.y - a.y) * t;
+}
+function branchYRange(b) {
+  let lo = Infinity, hi = -Infinity;
+  for (const p of b.pts) { if (p.y < lo) lo = p.y; if (p.y > hi) hi = p.y; }
+  return [lo, hi];
+}
+
 function buildDerivation(fn, goal, opts) {
   // 返回 Derivation 对象
   const steps = [];
@@ -743,13 +782,59 @@ function buildDerivation(fn, goal, opts) {
     if (fn.implicit && fn.conicType) {
       Fnode = MATH_.conicImplicitNode(fn);
       Ftex = fn.implicitTex;
+    } else if (fn.implicit && fn.Fnode) {
+      Fnode = fn.Fnode; Ftex = fn.implicitTex;
     }
-    if (!Fnode) { result.conclusion = { tex: null, text: '仅支持圆锥曲线（圆/椭圆/双曲线/抛物线）的隐函数求导。', badges: [] }; return result; }
+    if (!Fnode) { result.conclusion = { tex: null, text: '仅隐式方程 F(x,y)=0 支持隐函数求导。', badges: [] }; return result; }
     const id = MATH_.implicitDerivative(Fnode);
     if (!id || !id.dydx) { result.conclusion = { tex: null, text: '隐函数求导失败（F 不可偏导）。', badges: [] }; return result; }
     const al = ['F(x,y) = ' + (Ftex || FRONTEND.nodeToTex(Fnode)) + ' = 0', '两边对 x 求导（y 视作 x 的函数，链式法则）：', "F_x + F_y \\cdot y' = 0", 'F_x = ' + FRONTEND.nodeToTex(id.fx), 'F_y = ' + FRONTEND.nodeToTex(id.fy), "y' = -\\frac{F_x}{F_y} = " + FRONTEND.nodeToTex(id.dydx)];
     steps.push(makeStep('两边对 x 求导', "y'=-\\frac{F_x}{F_y}", '隐式方程 F(x,y)=0 两边对 x 求导，用链式法则解出 dy/dx。', 'key', { ok: true, numeric: true, symbolic: true }, null, al));
     result.conclusion = { tex: '\\frac{dy}{dx} = ' + FRONTEND.nodeToTex(id.dydx), text: '隐函数求导结果。', badges: [STR.exact] };
+  } else if (goal === 'implicitIntegral') {
+    result.title = '隐式曲线积分（面积与弧长）';
+    if (!fn.implicit || fn.conicType || !fn.implicitFn) {
+      result.conclusion = { tex: null, text: '该推导仅适用于一般隐式方程 F(x,y)=0。', badges: [] }; return result;
+    }
+    const a = (opts && opts.a !== undefined) ? opts.a : -10;
+    const b = (opts && opts.b !== undefined) ? opts.b : 10;
+    if (!(a < b) || !isFinite(a) || !isFinite(b)) {
+      result.conclusion = { tex: null, text: '区间无效：隐式曲线积分需要有限闭区间 [a,b]（请在区间分析里设定）。', badges: [] }; return result;
+    }
+    const wrap = implicitBranchesFor(fn, a, b);
+    const bs = wrap.branches.slice().sort((p, q) => p.x0 - q.x0 || MATH_.branchMidY(p) - MATH_.branchMidY(q));
+    if (!bs.length) {
+      steps.push(makeStep('分支追踪', fn.implicitTex || 'F(x,y)=0', '在区间 [a,b] 内逐列对 y 求根：一列都没有根，说明曲线在该区间内没有 y=y(x) 的分支（或整条曲线垂直，如 x=c）。', 'key', null, null,
+        ['F(x,y) = ' + (fn.implicitTex || ''), '扫描区间 x∈[' + fmtNum(a) + ',' + fmtNum(b) + ']，y∈[' + fmtNum(wrap.yWindow[0]) + ',' + fmtNum(wrap.yWindow[1]) + ']']));
+      result.conclusion = { tex: null, text: '在给定区间内没有追踪到曲线分支，无法积分（可扩大区间，或该曲线垂直、与 x 不成单值函数关系）。', badges: [] }; return result;
+    }
+    const br = bs[Math.min(bs.length - 1, Math.max(0, (opts && opts.branchIdx) | 0))];
+    const Ftex = fn.implicitTex || 'F(x,y)=0';
+    const branchList = bs.map((x2, i) => {
+      const yr = branchYRange(x2);
+      return '第 ' + (i + 1) + ' 支：x∈[' + fmtEdge(x2.x0, x2.x1) + ',' + fmtEdge(x2.x1, x2.x0) + ']，y∈[' + fmtEdge(yr[0], yr[1]) + ',' + fmtEdge(yr[1], yr[0]) + ']';
+    });
+    steps.push(makeStep('分支追踪', Ftex + '\\ \\Rightarrow\\ y=y(x),\\ x\\in[' + fmtEdge(br.x0, br.x1) + ',' + fmtEdge(br.x1, br.x0) + ']',
+      '一般隐式方程大多解不出 y=f(x) 的显式公式，改按「逐列对 y 求根 + 相邻列外推匹配」把曲线切成若干单值分支；分支在 F_y=0（垂直切线）处自然终止，正好满足对 x 积分的要求。', 'key', null, null,
+      [Ftex, 'x∈[' + fmtNum(a) + ',' + fmtNum(b) + '] 内共追踪到 ' + bs.length + ' 支'].concat(branchList)));
+    const fine = MATH_.implicitBranches(fn.implicitFn, [a, b], wrap.yWindow, { nx: Math.min(6000, bs.length > 24 ? 1200 : 2400) });
+    const brFine = bestOverlap(fine, br) || br;
+    const dArea = Math.abs(brFine.area - br.area);
+    const dArc = Math.abs(brFine.arcLen - br.arcLen);
+    steps.push(makeStep('面积（对 x 积分）', 'S=\\int_{' + fmtEdge(br.x0, br.x1) + '}^{' + fmtEdge(br.x1, br.x0) + '} y(x)\\,dx \\approx ' + fmtNum(br.area, 6),
+      '分支上的采样点本身就是数值求根得到的，用梯形公式累加；垂直切线端点已按 √ 型局部加密，末段细条不会漏掉。', 'key', null, null,
+      ['S = \\sum_i \\frac{y_i+y_{i+1}}{2}\\,(x_{i+1}-x_i)', '采样点数 n=' + br.pts.length, '加密网格复核：' + fmtNum(brFine.area, 6), '两次差值 |Δ| = ' + fmtNum(dArea, 3)]));
+    const id = MATH_.implicitDerivative(fn.Fnode);
+    const slopeTex = id && id.dydx ? '-\\frac{F_x}{F_y} = ' + FRONTEND.nodeToTex(id.dydx) : '-\\frac{F_x}{F_y}';
+    steps.push(makeStep('弧长', 'L=\\int_{' + fmtEdge(br.x0, br.x1) + '}^{' + fmtEdge(br.x1, br.x0) + '}\\sqrt{1+y\'^2}\\,dx \\approx ' + fmtNum(br.arcLen, 6),
+      '弧长被积函数含 y\'=-F_x/F_y，在 F_y=0 处发散（切线竖直），但积分收敛；这里直接用相邻采样点的弦长累加，等价于该积分的数值近似，端点奇异性不会造成溢出。', 'advanced', null, null,
+      ["y' = " + slopeTex, 'L = \\sum_i \\sqrt{(\\Delta x_i)^2+(\\Delta y_i)^2}', '采样点数 n=' + br.pts.length, '加密网格复核：' + fmtNum(brFine.arcLen, 6), '两次差值 |Δ| = ' + fmtNum(dArc, 3)]));
+    result.conclusion = {
+      tex: 'S \\approx ' + fmtNum(br.area, 6) + ',\\quad L \\approx ' + fmtNum(br.arcLen, 6),
+      text: '一般隐式方程无初等原函数，面积为数值梯形积分、弧长为数值折线累加：S≈' + fmtNum(br.area, 4) + '，L≈' + fmtNum(br.arcLen, 4) +
+        '（分支 x∈[' + fmtEdge(br.x0, br.x1) + ',' + fmtEdge(br.x1, br.x0) + ']，加密复核偏差 面积' + fmtNum(dArea, 2) + '、弧长' + fmtNum(dArc, 2) + '）。',
+      badges: [STR.window],
+    };
   } else if (goal === 'paramDerivative') {
     result.title = '参数方程求导';
     const pd = MATH_.paramDerivative(fn);
@@ -1108,6 +1193,7 @@ function goalTitle(goal) {
     analyze: '函数分析', compare: '比较 f 与 g', intersection: '联立求交点', roots: '求零点',
     continuity: '连续性判定', derivative: '求导', differential: '可微性判定',
     integrability: '定积分', integral: '积分', implicitDerivative: '隐函数求导', paramDerivative: '参数方程求导', paramIntegral: '参数方程积分',
+    implicitIntegral: '隐式曲线积分',
   }[goal] || '推导';
 }
 function completenessBadge(c) {
@@ -1228,4 +1314,4 @@ function checkIntegrability(fn, a, b) {
   return { integrable, polesIn, defInt, continuity: cont };
 }
 
-var ANALYSIS = { analyzeFunction, analyzeOnInterval, buildDerivation, checkStep, makeStep, computeRange, monotonicAnalysis, computeIntersections };
+var ANALYSIS = { analyzeFunction, analyzeOnInterval, buildDerivation, checkStep, makeStep, computeRange, monotonicAnalysis, computeIntersections, implicitBranchesFor };

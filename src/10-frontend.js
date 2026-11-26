@@ -45,6 +45,22 @@ function findTopLevelComma(s) {
   }
   return -1;
 }
+/* 顶层等号（关系式 F(x,y)=0 用）：跳过 <= >= != == 与括号内部 */
+function findTopLevelEq(s) {
+  let depth = 0;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (c === '(' || c === '[' || c === '{') depth++;
+    else if (c === ')' || c === ']' || c === '}') depth--;
+    else if (c === '=' && depth === 0) {
+      const prev = s[i - 1], next = s[i + 1];
+      if (prev === '<' || prev === '>' || prev === '!' || prev === '=') continue;
+      if (next === '=') { i++; continue; }
+      return i;
+    }
+  }
+  return -1;
+}
 function matchingParen(s, openIdx) {
   let depth = 0;
   for (let i = openIdx; i < s.length; i++) {
@@ -158,9 +174,21 @@ function normalize(raw) {
   if (m) { defName = m[1]; defVar = m[2]; body = m[3]; offset = raw.indexOf('=') + 1; }
   body = body.trim();
 
+  // 关系式：顶层有等号且不是 f(x)=… 定义式 → y=… 视作显式，其余视作 F(x,y)=0
+  let relation = null;
+  if (!m && !defName) {
+    const eqIdx = findTopLevelEq(body);
+    if (eqIdx > 0) {
+      const lhs = body.slice(0, eqIdx).trim(), rhs = body.slice(eqIdx + 1).trim();
+      if (!rhs) return { ok: false, error: '等式右边为空，请写成 y=… 或 F(x,y)=0' };
+      if (/^y$/i.test(lhs)) { body = rhs; offset = raw.indexOf(rhs); }
+      else relation = { lhs, rhs, eqAt: offset + eqIdx, lhsAt: offset, rhsAt: offset + eqIdx + 1 + (body.slice(eqIdx + 1).length - rhs.length) };
+    }
+  }
+
   // 分段检测：首字符 { 且末尾 }
   let piecewise = null;
-  if (body[0] === '{' && body[body.length - 1] === '}') {
+  if (!relation && body[0] === '{' && body[body.length - 1] === '}') {
     const inner = body.slice(1, -1);
     const caseStrs = splitTopLevel(inner, ';').map(x => x.trim()).filter(x => x);
     if (caseStrs.length === 0) return { ok: false, error: '分段函数格式应为 {表达式, 条件; …}，如 {x^2, x≥0; -x, x<0}' };
@@ -177,6 +205,13 @@ function normalize(raw) {
     }
     piecewise = { kind: 'piecewise', cases };
     return { ok: true, defName, defVar, offset, piecewise, norm: '', map: [] };
+  }
+
+  if (relation) {
+    const rl = normalizeExpr(relation.lhs), rr = normalizeExpr(relation.rhs);
+    const norm = '(' + rl.norm + ')-(' + rr.norm + ')';
+    const map = [relation.lhsAt].concat(rl.map, [relation.eqAt], [relation.eqAt], [relation.rhsAt], rr.map, [relation.rhsAt + relation.rhs.length - 1]);
+    return { ok: true, defName: null, defVar: 'x', offset: 0, piecewise: null, relation: true, lhsNorm: rl.norm, rhsNorm: rr.norm, norm, map };
   }
 
   const r = normalizeExpr(body);
@@ -205,6 +240,7 @@ function buildFn(normResult, raw, opts) {
   }
 
   const node = piecewise || expr;
+  if (n.relation) return { ok: true, fn: buildImplicitFn(node, n, raw, opts) };
   const params = collectParams(node, n.defVar);
   const fn = {
     id: 'fn' + (++FN_SEQ),
@@ -222,13 +258,57 @@ function buildFn(normResult, raw, opts) {
   return { ok: true, fn };
 }
 
-function collectParams(node, defVar) {
+/* 一般隐式方程 F(x,y)=0：由关系式归一化结果构造曲线条目 */
+function buildImplicitFn(Fnode, n, raw, opts) {
+  const fn = {
+    id: 'fn' + (++FN_SEQ),
+    src: raw,
+    name: opts.name || null,
+    var: 'x',
+    expr: Fnode,                 // F(x,y)（不是 y=f(x)，绘图按 fn.implicit 分发）
+    piecewise: false,
+    params: {}, paramOrder: [], paramRanges: {},
+    color: opts.color || PALETTE[FN_SEQ % PALETTE.length],
+    visible: true,
+    isDerived: !!opts.isDerived, derivedFrom: opts.derivedFrom || null, derivedLabel: opts.derivedLabel || null,
+    implicit: true, conicType: null,
+    Fnode: Fnode,
+  };
+  for (const p of collectParams(Fnode, ['x', 'y'])) { fn.params[p] = new Rat(1, 1); fn.paramRanges[p] = [-5, 5, 0.1]; fn.paramOrder.push(p); }
+  fn.implicitFn = makeImplicitEvaluator(fn);
+  let tex = null;
+  try { tex = nodeToTex(math.parse(n.lhsNorm)) + '=' + nodeToTex(math.parse(n.rhsNorm)); } catch (e) { tex = null; }
+  fn.implicitTex = tex || (nodeToTex(Fnode) + '=0');
+  return fn;
+}
+/* F(x,y) 求值闭包：坐标 + 参数滑块实时生效（等值线网格每帧调用上万次，复用 scope 对象） */
+function makeImplicitEvaluator(fn) {
+  const c = compileNode(fn.expr), scope = { x: 0, y: 0 };
+  const keys = Object.keys(fn.params);
+  return function (x, y) {
+    scope.x = x; scope.y = y;
+    for (let i = 0; i < keys.length; i++) scope[keys[i]] = fn.params[keys[i]].toNumber();
+    try {
+      const v = c.single.evaluate(scope);
+      return (typeof v === 'number' && isFinite(v)) ? v : (typeof v === 'number' ? v : NaN);
+    } catch (e) { return NaN; }
+  };
+}
+
+function collectParams(node, exclude) {
+  const excl = Array.isArray(exclude) ? new Set(exclude) : new Set([exclude]);
   const set = new Set();
   const walk = (nd) => {
     if (!nd) return;
     if (nd.isSymbolNode) {
-      if (!RESERVED.has(nd.name) && nd.name !== defVar) set.add(nd.name);
-    } else if (nd.args) { nd.args.forEach(walk); }
+      if (!RESERVED.has(nd.name) && !excl.has(nd.name)) set.add(nd.name);
+      return;
+    }
+    // 子节点字段不统一：args（运算/函数）、content（括号）、items（数组）
+    // 注意不递归 FunctionNode.fn，否则 sin/cos 会被当成自由字母
+    if (nd.args) nd.args.forEach(walk);
+    if (nd.content) walk(nd.content);
+    if (nd.items) nd.items.forEach(walk);
   };
   if (node.kind === 'piecewise') node.cases.forEach(c => { walk(c.expr); walk(c.cond); });
   else walk(node);
@@ -334,4 +414,4 @@ function symbolicallyEqual(nodeA, nodeB) {
   } catch (e) { return false; }
 }
 
-var FRONTEND = { normalize, buildFn, collectParams, compileNode, evalFn, evalNodeWithParams, nodeToTex, tweakTex, numericEqual, symbolicallyEqual, splitTopLevel, findTopLevelComma, isLetter, isDigit, UNICODE, SUP };
+var FRONTEND = { normalize, buildFn, buildImplicitFn, makeImplicitEvaluator, collectParams, compileNode, evalFn, evalNodeWithParams, nodeToTex, tweakTex, numericEqual, symbolicallyEqual, splitTopLevel, findTopLevelComma, findTopLevelEq, isLetter, isDigit, UNICODE, SUP };

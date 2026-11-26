@@ -89,6 +89,7 @@ UI.prototype.build = function () {
   this.derivMode = 'explain';
   this.calcGoal = null;
   this.calcFnOverride = null;
+  this.implicitBranchIdx = 0;
   this.calcOrder = 1;
   this.mode = '2d';
 };
@@ -254,7 +255,7 @@ UI.prototype.doCalc = function (goal) {
   if (goal === 'paramDerivative') {
     if (!sel.parametric) { alert('参数方程求导仅适用于参数曲线（由二维函数旋转生成）'); return; }
   } else if (goal === 'implicitDerivative') {
-    if (!(sel.implicit && sel.conicType)) { alert('隐函数求导仅适用于圆锥曲线（圆/椭圆/双曲线/抛物线）'); return; }
+    if (!sel.implicit) { alert('隐函数求导仅适用于隐式方程 F(x,y)=0，例如直接输入 x^2+y^2=4'); return; }
   } else if (goal === 'integral' && sel.parametric) {
     // 参数方程积分：不定积分无初等原函数（Liouville），走 paramIntegral 推导
     this.calcFnOverride = null;
@@ -273,7 +274,17 @@ UI.prototype.doCalc = function (goal) {
     });
     return;
   } else if (sel.implicit) {
-    alert(STR.noFnAnalysis); return;
+    // 一般隐式曲线：求导走 F_x/F_y；积分需要显式 y=f(x)，改走数值分支积分
+    if (goal === 'integral' || goal === 'integrability') {
+      this.pickImplicitBranch(sel, branchIdx => {
+        this.implicitBranchIdx = branchIdx;
+        this.calcFnOverride = null;
+        this.finishCalc('implicitIntegral');
+      });
+      return;
+    }
+    alert('一般隐式方程 F(x,y)=0 支持「隐函数求导」与「积分/定积分」（数值分支：面积 ∫y dx、弧长）；连续性、单调性等函数分析需要先有显式 y=f(x)。');
+    return;
   }
   this.calcFnOverride = null;
   this.finishCalc(goal);
@@ -829,6 +840,26 @@ UI.prototype.pickBranch = function (fn, cb) {
   if (eb.branches.length === 1) { cb(0); return; }
   this.showBranchPicker(fn, eb.branches, cb);
 };
+/* 一般隐式曲线：按当前区间数值追踪分支，供积分选支 */
+UI.prototype.pickImplicitBranch = function (fn, cb) {
+  const lo = this.interval && isFinite(this.interval.lo) ? this.interval.lo : -10;
+  const hi = this.interval && isFinite(this.interval.hi) ? this.interval.hi : 10;
+  if (!(lo < hi)) { alert('隐式曲线积分需要有限闭区间 [a,b]，请先在「区间分析」里设定（无穷区间不适用于数值积分）。'); return; }
+  const bs = ANALYSIS.implicitBranchesFor(fn, lo, hi).branches.slice()
+    .sort((p, q) => p.x0 - q.x0 || MATH_.branchMidY(p) - MATH_.branchMidY(q));
+  if (!bs.length) { alert('在 x∈[' + fmtNum(lo, 3) + ',' + fmtNum(hi, 3) + '] 内没有追踪到曲线分支：曲线可能整体垂直（如 x=c），或落在区间外。'); return; }
+  if (bs.length === 1) { cb(0); return; }
+  const show = bs.slice(0, 8);
+  const items = show.map((b, i) => {
+    const yr = [Math.min(...b.pts.map(p => p.y)), Math.max(...b.pts.map(p => p.y))];
+    return {
+      label: '第 ' + (i + 1) + ' 支　x∈[' + fmtEdge(b.x0, b.x1) + ', ' + fmtEdge(b.x1, b.x0) + ']　y∈[' + fmtEdge(yr[0], yr[1]) + ', ' + fmtEdge(yr[1], yr[0]) + ']',
+      tex: 'y=y(x),\\quad x\\in[' + fmtEdge(b.x0, b.x1) + ',' + fmtEdge(b.x1, b.x0) + ']',
+    };
+  });
+  if (bs.length > show.length) items.push({ label: '（共 ' + bs.length + ' 支，仅列出前 ' + show.length + ' 支）', tex: '\\cdots' });
+  this.showBranchPicker(fn, items, cb);
+};
 UI.prototype.showBranchPicker = function (fn, branches, cb) {
   const name = fn.name || 'f';
   const overlay = el('div', 'branch-overlay');
@@ -863,7 +894,14 @@ UI.prototype.autoFit = function () {
   const samples = [];
   const xr = vp.xRange();
   for (const fn of fns) {
-    if (fn.implicit || fn.parametric) continue;
+    if (fn.parametric) continue;
+    if (fn.implicit) {
+      // 隐式曲线没有 y=f(x)：用分支追踪在默认窗口内取点，得到曲线包围盒
+      if (typeof fn.implicitFn !== 'function') continue;
+      const r = MATH_.implicitBranchesAuto(fn.implicitFn, [-10, 10], { nx: 400 });
+      for (const b of r.branches) for (const p of b.pts) samples.push({ x: p.x, y: p.y });
+      continue;
+    }
     for (let i = 0; i <= 300; i++) {
       const x = xr[0] + (xr[1] - xr[0]) * i / 300;
       const y = FRONTEND.evalFn(fn, x, fn.params);
@@ -1017,12 +1055,24 @@ UI.prototype.onHover = function (e) {
   const canvas = this.el.canvas;
   const rect = canvas.getBoundingClientRect();
   const x = this.plot.vp.pxToX(e.clientX - rect.left);
+  const SUB = '₁₂₃₄₅₆₇₈₉';
   const fns = this.store.visibleFunctions();
   const ys = [];
   for (const fn of fns) {
-    if (fn.implicit || fn.parametric) continue;
+    if (fn.parametric) continue;
+    if (fn.implicit) {
+      // 隐式曲线在一列上可能有 0/1/2… 个交点：竖向数值求根，与等值线渲染同一口径
+      if (typeof fn.implicitFn !== 'function') continue;
+      const yr = this.plot.vp.yRange();
+      const roots = MATH_.scanRoots(y => fn.implicitFn(x, y), yr[0], yr[1], 800);
+      const base = fn.name || 'C';
+      for (let i = 0; i < roots.length; i++) {
+        ys.push({ id: fn.id, name: base + (roots.length > 1 ? (SUB[i] || '(' + (i + 1) + ')') : ''), color: fn.color, y: roots[i] });
+      }
+      continue;
+    }
     const y = FRONTEND.evalFn(fn, x, fn.params);
-    if (isFinite(y)) ys.push({ name: fn.name || 'f', color: fn.color, y });
+    if (isFinite(y)) ys.push({ id: fn.id, name: fn.name || 'f', color: fn.color, y });
   }
   if (ys.length) { this.plot.hover = { x, ys }; this.plot.pinned = null; this.plot.render(); this.updateReadout(this.plot.hover, false); }
   else { this.plot.hover = null; this.el.readout.style.display = 'none'; }
@@ -1031,10 +1081,8 @@ UI.prototype.updateReadout = function (h, locked) {
   const rd = this.el.readout;
   const parts = ['x=' + fmtNum(h.x, 4)];
   for (const y of h.ys) parts.push((y.name || 'f') + '=' + fmtNum(y.y, 4));
-  if (h.ys.length >= 2) {
-    const a = h.ys[0].y, b = h.ys[1].y;
-    parts.push(h.ys[0].name + (a > b ? '>' : a < b ? '<' : '=') + h.ys[1].name);
-  }
+  const a = h.ys[0], b = h.ys.find(z => z.id !== a.id);
+  if (b) parts.push(a.name + (a.y > b.y ? '>' : a.y < b.y ? '<' : '=') + b.name);   // 只比不同曲线，同一曲线的多交点不比
   rd.textContent = parts.join('  |  ') + (locked ? '  已钉住' : '');
   rd.style.display = 'block';
 };
@@ -1069,12 +1117,16 @@ UI.prototype.renderFunctionList = function () {
     const swatch = el('div', 'swatch'); swatch.style.background = fn.color;
     let nameText = fn.name || 'f';
     if (fn.implicit && fn.conicType) nameText = MATH_.CONIC[fn.conicType].label;
+    else if (fn.implicit) nameText = '曲线';
     else if (fn.parametric) nameText = '参数曲线';
     const name = el('div', 'fname', nameText);
     const expr = el('div', 'fexpr');
     if (fn.implicit && fn.conicType) {
       katexRender(expr, MATH_.CONIC[fn.conicType].implicitTex(fn.conicParams), false);
       expr.appendChild(el('span', 'deriv-tag', '隐式'));
+    } else if (fn.implicit) {
+      katexRender(expr, fn.implicitTex || FRONTEND.nodeToTex(fn.expr) + '=0', false);
+      expr.appendChild(el('span', 'deriv-tag', STR.implicitEq));
     } else if (fn.parametric) {
       if (fn.pcSrcTex) katexRender(expr, fn.pcSrcTex + '\\;\\text{旋转 }' + fn.pcTheta + '^{\\circ}', false);
       else katexRender(expr, FRONTEND.nodeToTex(fn.expr), false);
@@ -1224,6 +1276,8 @@ UI.prototype.renderCurveForm = function (body, fn) {
   if (fn.implicit && fn.conicType) {
     addLine(STR.implicitEq, fn.implicitTex);
     addLine(STR.paramEq, fn.paramTex);
+  } else if (fn.implicit) {
+    addLine(STR.implicitEq, fn.implicitTex || FRONTEND.nodeToTex(fn.expr) + '=0');
   } else if (fn.parametric) {
     addLine(STR.paramEq, this.parametricTex(fn));
     const imp = MATH_.paramImplicit(fn);
@@ -1353,6 +1407,7 @@ UI.prototype.renderDerivation = function (body, fn) {
     const lo = this.interval && isFinite(this.interval.lo) ? this.interval.lo : -10;
     const hi = this.interval && isFinite(this.interval.hi) ? this.interval.hi : 10;
     opts = { order: this.calcOrder || 1, a: lo, b: hi };
+    if (goal === 'implicitIntegral') opts.branchIdx = this.implicitBranchIdx || 0;
   } else goal = 'analyze';
   const effFn = (this.calcGoal && this.calcFnOverride) ? this.calcFnOverride : fn;
   const deriv = ANALYSIS.buildDerivation(effFn, goal, opts);

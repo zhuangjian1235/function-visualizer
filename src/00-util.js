@@ -105,6 +105,11 @@ function fmtNum(x, prec = 6) {
   if (s === '-0') s = '0';
   return s;
 }
+/* 端点显示：数值求根的残差（相对区间尺度可忽略）归零，避免积分限出现 -2.5e-11 这类噪声 */
+function fmtEdge(v, ref) {
+  const eps = Math.max(Math.abs(ref) || 0, 1) * 1e-8;
+  return fmtNum(Math.abs(v) < eps ? 0 : v, 4);
+}
 function mathFractionApprox(x) {
   // 简单小数/分数近似：返回 "3/2" 或 null
   const r = Rat.fromNumber(x, 100000n);
@@ -192,4 +197,4 @@ function parseRatValue(str) {
   } catch (e) { return null; }
 }
 
-var UTIL = { Rat, fmtNum, LRU, PALETTE, PI, TAU, STR, gcd, parseRatValue };
+var UTIL = { Rat, fmtNum, fmtEdge, LRU, PALETTE, PI, TAU, STR, gcd, parseRatValue };

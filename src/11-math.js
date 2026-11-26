@@ -2027,6 +2027,169 @@ function implicitDerivative(FNode) {
   return { fx, fy, dydx };
 }
 
+/* ---------- 一般隐式方程 F(x,y)=0：数值分支追踪 ----------
+ * 竖向逐列求根 + 线性外推匹配 → 每个分支是 x 的函数（可直接对 x 积分）。
+ * 相比沿曲线推进（y'=-F_x/F_y），竖扫在 F_y=0（垂直切线）处自然终止，
+ * 不会绕回闭环，正好符合 ∫y dx 需要的单值分支。 */
+function implicitBranches(F, xr, yr, opts) {
+  opts = opts || {};
+  const x0 = xr[0], x1 = xr[1], y0 = yr[0], y1 = yr[1];
+  if (!(x0 < x1) || !(y0 < y1)) return [];
+  const nx = opts.nx || Math.max(600, Math.min(2400, Math.round((x1 - x0) / 0.01)));
+  const ny = opts.ny || 240;
+  const h = (x1 - x0) / nx;
+  const jumpTol = (y1 - y0) / ny * 6;
+  const all = [];
+  let live = [];
+  for (let i = 0; i <= nx; i++) {
+    const x = x0 + i * h;
+    const ys = scanRoots(y => F(x, y), y0, y1, ny);
+    const used = new Set(), assign = new Map(), cand = [];
+    for (let bi = 0; bi < live.length; bi++) {
+      const b = live[bi], lp = b.pts[b.pts.length - 1];
+      const pp = b.pts.length > 1 ? b.pts[b.pts.length - 2] : lp;
+      const pred = lp.y + (lp.y - pp.y);                       // 线性外推
+      ys.forEach((y, j) => cand.push({ bi, j, d: Math.abs(y - pred) }));
+    }
+    cand.sort((p, q) => p.d - q.d);
+    for (const c of cand) {
+      if (c.d > jumpTol || assign.has(c.bi) || used.has(c.j)) continue;
+      assign.set(c.bi, c.j); used.add(c.j);
+    }
+    const next = [];
+    for (let bi = 0; bi < live.length; bi++) {
+      const b = live[bi];
+      if (assign.has(bi)) { b.pts.push({ x, y: ys[assign.get(bi)] }); b.gap = 0; next.push(b); }
+      else { b.gap++; if (b.gap <= 2) next.push(b); }          // 容忍 1–2 列缺根（切线附近数值抖动）
+    }
+    ys.forEach((y, j) => {
+      if (used.has(j)) return;
+      const b = { pts: [{ x, y }], gap: 0 };
+      all.push(b); next.push(b);
+    });
+    live = next;
+  }
+  return all
+    .filter(b => b.pts.length >= 3)
+    .map(b => {
+      const pts = refineBranchEnds(F, refineBranchEnds(F, b.pts, +1, y0, y1, x0, x1), -1, y0, y1, x0, x1);
+      return { pts, x0: pts[0].x, x1: pts[pts.length - 1].x, h, area: trapezoid(pts), arcLen: polylineLength(pts) };
+    });
+}
+/* 自动确定 y 搜索窗口：先给一个猜测窗口，若有根贴着边界就加倍重试 */
+function implicitBranchesAuto(F, xr, opts) {
+  opts = opts || {};
+  const spanX = xr[1] - xr[0];
+  let Y = Math.max(4, spanX / 2);
+  let last = null;
+  for (let tries = 0; tries < 4; tries++) {
+    const yr = [-Y, Y];
+    const bs = implicitBranches(F, xr, yr, opts);
+    last = { branches: bs, yWindow: yr };
+    const touching = bs.some(b => b.pts.some(p => Math.abs(Math.abs(p.y) - Y) < Y * 0.02));
+    if (!touching || bs.length > 64) break;        // 分支已爆炸（周期曲线）就别再放大窗口
+    Y *= 2;
+  }
+  return last;
+}
+/* 端点延伸：垂直切线处 y 型如 √(x*−x)，等距列会在末端留下一整段圆弧没采到。
+ * 先用「探到根就翻倍、探不到就折半」向外推进，再在最后一个有根列与首个无根列
+ * 之间二分出真正的转折点（F=0 且 F_y=0），把分支补齐到窗口/拐点。 */
+function refineBranchEnds(F, pts, dir, y0, y1, x0, x1) {
+  if (pts.length < 2) return pts;
+  const edge = dir > 0 ? pts[pts.length - 1] : pts[0];
+  const near = dir > 0 ? pts[pts.length - 2] : pts[1];
+  const span = Math.min((y1 - y0) / 2, Math.max((y1 - y0) / 50, Math.abs(edge.y - near.y) * 8));
+  const h = Math.abs(edge.x - near.x) || 1e-3;
+  const minStep = h * 1e-6;
+  const wall = dir > 0 ? x1 : x0;                  // 分支不越出扫描窗口
+  let x = edge.x, y = edge.y, step = h;
+  let badX = null;                                 // 第一个探不到根的 x
+  const extra = [];
+  for (let k = 0; k < 80 && step > minStep && Math.abs(wall - x) > minStep; k++) {
+    let xt = x + dir * step;
+    if (dir > 0 ? xt > wall : xt < wall) xt = wall;
+    const root = nearestRootY(F, xt, y, span);
+    if (root === null) { if (badX === null) badX = xt; step /= 2; continue; }
+    if (root < y0 || root > y1) break;             // 冲出 y 窗口：分支就到边界为止
+    extra.push({ x: xt, y: root });
+    x = xt; y = root;
+    step = Math.min(step * 2, h);
+  }
+  if (badX !== null && Math.abs(badX - x) > minStep) {
+    let a = x, b = badX, ay = y;
+    for (let i = 0; i < 60 && Math.abs(b - a) > Math.abs(badX - x) * 1e-12; i++) {
+      const m = (a + b) / 2;
+      const r = tailRootY(F, m, ay, span);
+      if (r === null || r < y0 || r > y1) b = m; else { a = m; ay = r; }
+    }
+    if (ay >= y0 && ay <= y1) extra.push({ x: a, y: ay });
+  }
+  return dir > 0 ? pts.concat(extra) : extra.reverse().concat(pts);
+}
+/* 转折点判根：两根并拢后不再有符号变化，退化为 |F| 的局部极小（黄金分割） */
+function tailRootY(F, x, seed, span) {
+  const r = nearestRootY(F, x, seed, span);
+  if (r !== null) return r;
+  const w = Math.min(span, 1);
+  const g = 0.6180339887498949;
+  let a = seed - w, b = seed + w;
+  let c = b - g * (b - a), d = a + g * (b - a);
+  let fc = Math.abs(F(x, c)), fd = Math.abs(F(x, d));
+  const scale = Math.max(Math.abs(F(x, a)), Math.abs(F(x, b)), 1e-300);
+  for (let i = 0; i < 50; i++) {
+    if (fc < fd) { b = d; d = c; fd = fc; c = b - g * (b - a); fc = Math.abs(F(x, c)); }
+    else { a = c; c = d; fc = fd; d = a + g * (b - a); fd = Math.abs(F(x, d)); }
+    if (b - a <= 1e-13 * Math.max(1, Math.abs(seed))) break;
+  }
+  const y = fc <= fd ? c : d;
+  return Math.min(fc, fd) <= scale * 1e-10 ? y : null;
+}
+/* 从 seed 向两侧「几何外扩找符号变化」，取离 seed 最近的根。
+ * 垂直切线附近两根并拢（间距可小于任何固定网格），等距扫描会整段漏掉；
+ * 以 seed 为起点外扩则无论两根多近都能撞到第一次变号。 */
+function nearestRootY(F, x, seed, span) {
+  const v0 = F(x, seed);
+  if (v0 === 0) return seed;
+  if (!isFinite(v0)) return null;
+  let best = null;
+  for (const dir of [-1, 1]) {
+    let d = span / 64, py = seed, pv = v0;
+    for (let i = 0; i < 60 && Math.abs(seed + dir * d - seed) <= span; i++) {
+      const y = seed + dir * d, v = F(x, y);
+      if (isFinite(v) && pv * v <= 0) {
+        const r = (v === 0) ? y : brent(yy => F(x, yy), py, y);
+        if (r !== null && isFinite(r) && (best === null || Math.abs(r - seed) < Math.abs(best - seed))) best = r;
+        break;                                  // 只需该侧最近的一次变号
+      }
+      py = y; pv = v; d *= 1.6;
+    }
+  }
+  return best;
+}
+/* 梯形法（x 非等距也可用；末段已几何加密，误差主要来自等距主段） */
+function trapezoid(pts) {
+  let s = 0;
+  for (let i = 1; i < pts.length; i++) s += (pts[i].y + pts[i - 1].y) * (pts[i].x - pts[i - 1].x) / 2;
+  return s;
+}
+function polylineLength(pts) {
+  let L = 0;
+  for (let i = 1; i < pts.length; i++) L += Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y);
+  return L;
+}
+/* 分支排序用的代表高度（首尾 y 的中点）：上下两支 x 范围相同时靠它定序 */
+function branchMidY(b) { return (b.pts[0].y + b.pts[b.pts.length - 1].y) / 2; }
+/* 数值偏导（中心差分）给出 y' = -F_x/F_y 的具体斜率；F_y=0 时判为垂直切线 */
+function implicitSlope(F, x, y) {
+  const hx = 1e-5 * Math.max(1, Math.abs(x)), hy = 1e-5 * Math.max(1, Math.abs(y));
+  const fx = (F(x + hx, y) - F(x - hx, y)) / (2 * hx);
+  const fy = (F(x, y + hy) - F(x, y - hy)) / (2 * hy);
+  if (!isFinite(fx) || !isFinite(fy)) return null;
+  if (Math.abs(fy) < 1e-9) return null;
+  return -fx / fy;
+}
+
 /* ---------- 参数方程求导 dy/dx = (dY/dt)/(dX/dt) ----------
    项目参数曲线由「二维函数 f 绕原点旋转 θ + 平移 (a,b)」生成：
    X(t) = (t-a)cosθ + (f(t)-b)sinθ，Y(t) = -(t-a)sinθ + (f(t)-b)cosθ
@@ -2080,6 +2243,7 @@ var MATH_ = {
   isLinear, rotateLine, translateExact, paramEquations, coordinateTransform,
   explicitImplicit, paramImplicit, CONIC, buildConic, updateConic,
   explicitBranches, conicBranches, paramMonotonicSegments, invertParamX, solveRadicalEquation, scanRoots,
+  implicitBranches, implicitBranchesAuto, implicitSlope, trapezoid, polylineLength, branchMidY,
   integrate, nthDerivative, nthIntegral, definiteIntegral, conicImplicitNode, implicitDerivative, paramDerivative, approxLimit,
   polyDiv, solveLinear, integrateRational, integrateTrigProduct, integrateTrigPower,
   numericIntegrate, matchNonElementary,
